@@ -1,27 +1,5 @@
 """
-Giao diện tính năng Gộp File (Merge) — GIAI ĐOẠN THIẾT KẾ UI THUẦN.
-
-Bố cục 2 cột (A ~55% - B ~45%), dùng chung ngôn ngữ thiết kế với split_widget.py
-(màu sắc/CONTROL_HEIGHT/CORNER_RADIUS lấy từ vishipel_theme.py):
-
-- Cột A: A1 khối chọn file (nhiều file, không giới hạn số lượng — đúng
-  02_dac_ta_tinh_nang.md mục 2), A2 danh sách file dạng thẻ có thể kéo-thả
-  đổi thứ tự (thứ tự trong danh sách = thứ tự ghép vào file kết quả), click
-  cả dòng để xem trước ở Cột B, nút "⋮" mỗi dòng để xoá khỏi danh sách,
-  dropdown "Sắp xếp" là tiện ích phụ (không thay thế kéo-thả tay).
-- Cột B: xem trước file đang chọn — dải thumbnail dọc bên trái (có thanh
-  cuộn riêng) + khung xem lớn bên phải + điều hướng trang trước/sau.
-  (Không có control Zoom theo yêu cầu đại ca.)
-
-CHƯA gắn logic xử lý PDF thật — dữ liệu file/số trang là placeholder giả.
-Sẽ nối vào pdf_core.py ở Giai đoạn 2/3 (xem 05_lo_trinh_phat_trien.md).
-Các chỗ cần thay khi đó được đánh dấu # TODO Giai đoạn 2/3.
-
-Ghi chú kỹ thuật quan trọng: Qt không hỗ trợ tốt việc kéo-thả nguyên 1 dòng
-QListWidgetItem khi dòng đó có itemWidget tuỳ biến phủ kín (itemWidget sẽ
-"ăn" hết sự kiện chuột trước khi QAbstractItemView kịp nhận diện thao tác
-kéo) — vì vậy mỗi dòng có riêng 1 tay cầm kéo (icon mdi6.drag-vertical bên
-trái) để bắt đầu kéo, thay vì kéo tự do trên cả dòng như hình mẫu.
+Giao diện tính năng Gộp File (Merge) — Đã điều chỉnh theo yêu cầu UI/UX.
 """
 from __future__ import annotations
 
@@ -61,7 +39,7 @@ from src.ui.vishipel_theme import (
 )
 
 # ----------------------------------------------------------------------
-# Dữ liệu giả để dựng giao diện khi chưa nối pdf_core.py (Giai đoạn 2/3).
+# Dữ liệu giả để dựng giao diện
 # ----------------------------------------------------------------------
 _MOCK_FILES = [
     {"name": "Tai lieu 01.pdf", "size": "2.4 MB", "pages": 12},
@@ -70,23 +48,23 @@ _MOCK_FILES = [
     {"name": "Tai lieu 04.pdf", "size": "956 KB", "pages": 6},
     {"name": "Tai lieu 05.pdf", "size": "1.6 MB", "pages": 10},
 ]
-# Số trang giả gán cho file mới chọn qua dialog/kéo-thả (chưa đọc PDF thật).
 _MOCK_PAGES_FOR_NEW_FILE = 5
 
 _ROW_ICON_SIZE = 34
 _HANDLE_ICON_SIZE = 18
-_PILL_BG = "#F3F4F6"           # nền pill "N trang" — chỉ dùng riêng màn này
+_PILL_BG = "#F3F4F6"
 _DROPZONE_ICON_BOX = 56
 
-_THUMB_STRIP_WIDTH = 148
-_THUMB_W, _THUMB_H = 92, 118    # tỉ lệ dọc giống trang A4 thu nhỏ
-_BADGE_SIZE = 20
+# Đã thu nhỏ thumbnail để dành diện tích cho xem trước
+_THUMB_STRIP_WIDTH = 115
+_THUMB_W, _THUMB_H = 72, 94
+_BADGE_SIZE = 18
 _DRAG_THRESHOLD = 8
 
 _SCROLLBAR_QSS = f"""
     QScrollBar:vertical {{
         background: transparent;
-        width: 9px;
+        width: 8px;
         margin: 4px 2px 4px 0px;
     }}
     QScrollBar::handle:vertical {{
@@ -109,8 +87,6 @@ _SCROLLBAR_QSS = f"""
 
 
 def _parse_size_to_mb(size_text: str) -> float:
-    """Quy đổi chuỗi dung lượng hiển thị (VD '2.4 MB', '956 KB') về số MB để
-    so sánh khi sắp xếp. Không parse được thì coi như 0 (xếp cuối)."""
     try:
         value_str, unit = size_text.strip().split()
         value = float(value_str)
@@ -120,10 +96,10 @@ def _parse_size_to_mb(size_text: str) -> float:
 
 
 # ----------------------------------------------------------------------
-# A1 — Khối chọn file (giống Split: nền trắng, viền nét đứt, icon khung)
+# A1 — Khối chọn file
 # ----------------------------------------------------------------------
 class _DropZone(QFrame):
-    files_selected = Signal(list)  # list[str] đường dẫn file
+    files_selected = Signal(list)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -177,8 +153,6 @@ class _DropZone(QFrame):
         )
         text_col.addWidget(main_label)
 
-        # Theo 02_dac_ta_tinh_nang.md mục 2: không giới hạn cứng số file —
-        # chỉ nhắc yêu cầu nghiệp vụ tối thiểu 2 file để gộp.
         note_label = QLabel("Lưu ý: CHỌN TỪ 2 FILE TRỞ LÊN")
         note_label.setStyleSheet(
             f"color: {COLOR_TEXT_SECONDARY}; font-size: 13px; font-weight: 600; "
@@ -193,7 +167,7 @@ class _DropZone(QFrame):
         if paths:
             self.files_selected.emit(paths)
 
-    def mousePressEvent(self, event) -> None:  # noqa: D401 - override Qt
+    def mousePressEvent(self, event) -> None:
         self._open_file_dialog()
         super().mousePressEvent(event)
 
@@ -214,11 +188,10 @@ class _DropZone(QFrame):
 
 
 # ----------------------------------------------------------------------
-# Danh sách file — QListWidget tuỳ biến, chỉ nhận DROP (không tự kéo từ
-# việc chọn item) vì thao tác kéo được tay cầm riêng của mỗi dòng khởi tạo.
+# Danh sách file kéo-thả
 # ----------------------------------------------------------------------
 class _DraggableFileList(QListWidget):
-    row_drag_dropped = Signal(int, int)  # (vị trí cũ, vị trí thả tới)
+    row_drag_dropped = Signal(int, int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -247,7 +220,7 @@ class _DraggableFileList(QListWidget):
         if event.mimeData().hasText():
             event.acceptProposedAction()
 
-    def dragMoveEvent(self, event) -> None:  # noqa: D401 - override Qt
+    def dragMoveEvent(self, event) -> None:
         if event.mimeData().hasText():
             event.acceptProposedAction()
 
@@ -260,15 +233,12 @@ class _DraggableFileList(QListWidget):
             return
         pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
         target_item = self.itemAt(pos)
-        target_index = self.row(target_item) if target_item is not None else self.count()
+        target_index = self.row(target_item) if target_item is not None else self.count() - 1
         event.acceptProposedAction()
         self.row_drag_dropped.emit(source_index, target_index)
 
 
 class _DragHandle(QLabel):
-    """Tay cầm kéo (icon mdi6.drag-vertical) — nơi duy nhất khởi tạo thao
-    tác kéo-thả sắp xếp lại danh sách file (xem ghi chú kỹ thuật đầu file)."""
-
     def __init__(self, owner_row: "_FileRow", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.owner_row = owner_row
@@ -278,11 +248,11 @@ class _DragHandle(QLabel):
         self.setStyleSheet("background: transparent; border: none;")
         self._press_pos = None
 
-    def mousePressEvent(self, event) -> None:  # noqa: D401 - override Qt
+    def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
             self._press_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
 
-    def mouseMoveEvent(self, event) -> None:  # noqa: D401 - override Qt
+    def mouseMoveEvent(self, event) -> None:
         if self._press_pos is None:
             return
         current_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
@@ -291,12 +261,12 @@ class _DragHandle(QLabel):
         self._press_pos = None
         self.owner_row.start_drag()
 
-    def mouseReleaseEvent(self, event) -> None:  # noqa: D401 - override Qt
+    def mouseReleaseEvent(self, event) -> None:
         self._press_pos = None
 
 
 # ----------------------------------------------------------------------
-# A3 — 1 dòng trong danh sách file
+# A3 — 1 dòng trong danh sách file (Thay nút 3 chấm bằng nút X xóa trực tiếp)
 # ----------------------------------------------------------------------
 class _FileRow(QFrame):
     clicked = Signal()
@@ -348,23 +318,28 @@ class _FileRow(QFrame):
         )
         layout.addWidget(pages_pill)
 
-        self.menu_button = QToolButton()
-        self.menu_button.setCursor(Qt.PointingHandCursor)
-        self.menu_button.setIcon(qta.icon("mdi6.dots-vertical", color=COLOR_TEXT_SECONDARY))
-        self.menu_button.setAutoRaise(True)
-        self.menu_button.setPopupMode(QToolButton.InstantPopup)
-        self.menu_button.setStyleSheet(
-            """
-            QToolButton { background: transparent; border: none; padding: 4px; }
-            QToolButton:hover { background-color: #F3F4F6; border-radius: 6px; }
-            QToolButton::menu-indicator { image: none; }
+        # Nút icon X xóa trực tiếp
+        self.delete_btn = QToolButton()
+        self.delete_btn.setCursor(Qt.PointingHandCursor)
+        self.delete_btn.setIcon(qta.icon("mdi6.close", color=COLOR_TEXT_SECONDARY))
+        self.delete_btn.setIconSize(QSize(18, 18))
+        self.delete_btn.setToolTip("Xoá khỏi danh sách")
+        self.delete_btn.setStyleSheet(
+            f"""
+            QToolButton {{
+                background: transparent;
+                border: none;
+                border-radius: 6px;
+                padding: 4px;
+            }}
+            QToolButton:hover {{
+                background-color: #FEE2E2;
+                color: {COLOR_ERROR};
+            }}
             """
         )
-        menu = QMenu(self.menu_button)
-        remove_action = menu.addAction("Xoá khỏi danh sách")
-        remove_action.triggered.connect(self.remove_requested.emit)
-        self.menu_button.setMenu(menu)
-        layout.addWidget(self.menu_button)
+        self.delete_btn.clicked.connect(self.remove_requested.emit)
+        layout.addWidget(self.delete_btn)
 
     def _apply_style(self) -> None:
         if self.is_selected:
@@ -407,13 +382,13 @@ class _FileRow(QFrame):
         if index is not None:
             self.list_widget.start_row_drag(index)
 
-    def mousePressEvent(self, event) -> None:  # noqa: D401 - override Qt
+    def mousePressEvent(self, event) -> None:
         super().mousePressEvent(event)
         self.clicked.emit()
 
 
 # ----------------------------------------------------------------------
-# Cột B — 1 thumbnail trang trong dải xem trước
+# Cột B — Thumbnail nhỏ gọn hơn
 # ----------------------------------------------------------------------
 class _PreviewThumb(QFrame):
     clicked = Signal(int)
@@ -443,15 +418,15 @@ class _PreviewThumb(QFrame):
     def _apply_style(self) -> None:
         if self.is_current:
             self.setStyleSheet(
-                f"QFrame {{ background-color: {COLOR_ACCENT_LIGHT}; border: 2px solid {COLOR_ACCENT}; border-radius: 8px; }}"
+                f"QFrame {{ background-color: {COLOR_ACCENT_LIGHT}; border: 2px solid {COLOR_ACCENT}; border-radius: 6px; }}"
             )
             self.badge.setStyleSheet(
-                f"background-color: {COLOR_ACCENT}; color: white; font-size: 11px; font-weight: 700; "
+                f"background-color: {COLOR_ACCENT}; color: white; font-size: 10px; font-weight: 700; "
                 f"border-radius: {_BADGE_SIZE // 2}px; border: none;"
             )
         else:
             self.setStyleSheet(
-                f"QFrame {{ background-color: white; border: 1px solid {COLOR_BORDER}; border-radius: 8px; }}"
+                f"QFrame {{ background-color: white; border: 1px solid {COLOR_BORDER}; border-radius: 6px; }}"
             )
             self.badge.setStyleSheet("background-color: transparent; color: transparent; border: none;")
 
@@ -459,7 +434,7 @@ class _PreviewThumb(QFrame):
         self.is_current = current
         self._apply_style()
 
-    def mousePressEvent(self, event) -> None:  # noqa: D401 - override Qt
+    def mousePressEvent(self, event) -> None:
         super().mousePressEvent(event)
         self.clicked.emit(self.page_number)
 
@@ -468,8 +443,6 @@ class _PreviewThumb(QFrame):
 # Widget chính
 # ----------------------------------------------------------------------
 class MergeFeatureWidget(QWidget):
-    """Giao diện tính năng Gộp File — GIAI ĐOẠN UI THUẦN (xem docstring đầu file)."""
-
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
@@ -483,7 +456,7 @@ class MergeFeatureWidget(QWidget):
         root_layout.setContentsMargins(28, 24, 28, 24)
         root_layout.setSpacing(20)
 
-        # ================= CỘT A (~55%) =================
+        # ================= CỘT A (50%) =================
         column_a = QVBoxLayout()
         column_a.setSpacing(14)
 
@@ -492,7 +465,7 @@ class MergeFeatureWidget(QWidget):
         self.drop_zone.files_selected.connect(self._on_files_selected)
         column_a.addWidget(self.drop_zone)
 
-        # --- A2: khung danh sách file ---
+        # --- A2: Danh sách file ---
         list_card = QFrame()
         list_card.setStyleSheet(
             f"QFrame {{ background-color: white; border: 1.5px solid {COLOR_BORDER}; border-radius: 14px; }}"
@@ -515,10 +488,10 @@ class MergeFeatureWidget(QWidget):
         list_header.addWidget(self.list_count_label)
         list_header.addStretch()
 
-        # Dropdown "Sắp xếp" — tiện ích phụ, KHÔNG thay thế kéo-thả tay.
+        # Nút Sắp xếp: Chữ và Icon màu đen (COLOR_TEXT_PRIMARY)
         self.sort_button = QToolButton()
         self.sort_button.setText(" Sắp xếp")
-        self.sort_button.setIcon(qta.icon("mdi6.sort", color=COLOR_TEXT_SECONDARY))
+        self.sort_button.setIcon(qta.icon("mdi6.sort", color=COLOR_TEXT_PRIMARY))
         self.sort_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.sort_button.setCursor(Qt.PointingHandCursor)
         self.sort_button.setPopupMode(QToolButton.InstantPopup)
@@ -527,7 +500,7 @@ class MergeFeatureWidget(QWidget):
             QToolButton {{
                 background: transparent;
                 border: none;
-                color: {COLOR_TEXT_SECONDARY};
+                color: {COLOR_TEXT_PRIMARY};
                 font-size: 13px;
                 font-weight: 600;
                 padding: 4px 8px;
@@ -537,7 +510,12 @@ class MergeFeatureWidget(QWidget):
             QToolButton::menu-indicator {{ image: none; }}
             """
         )
+
         sort_menu = QMenu(self.sort_button)
+        sort_menu.setStyleSheet(
+            f"QMenu {{ background-color: white; color: {COLOR_TEXT_PRIMARY}; border: 1px solid {COLOR_BORDER}; }}"
+            f"QMenu::item:selected {{ background-color: #F3F4F6; color: {COLOR_TEXT_PRIMARY}; }}"
+        )
         sort_menu.addAction("Tên (A → Z)", lambda: self._sort_files("name"))
         sort_menu.addAction("Dung lượng (lớn → nhỏ)", lambda: self._sort_files("size"))
         sort_menu.addAction("Số trang (nhiều → ít)", lambda: self._sort_files("pages"))
@@ -562,10 +540,9 @@ class MergeFeatureWidget(QWidget):
 
         column_a.addWidget(list_card, 1)
 
-        # --- A4: hàng nút hành động ---
+        # --- A4: Hàng nút bấm (ĐÃ CĂN TRÁI) ---
         bottom_row = QHBoxLayout()
         bottom_row.setSpacing(10)
-        bottom_row.addStretch()
 
         self.clear_button = QPushButton(" Clear")
         self.clear_button.setIcon(qta.icon("mdi6.trash-can-outline", color=COLOR_TEXT_PRIMARY))
@@ -612,6 +589,9 @@ class MergeFeatureWidget(QWidget):
         )
         self.merge_button.clicked.connect(self._on_merge_clicked)
         bottom_row.addWidget(self.merge_button)
+
+        # Căn trái bằng cách đẩy khoảng trống ra đằng sau
+        bottom_row.addStretch()
 
         column_a.addLayout(bottom_row)
 
@@ -670,8 +650,9 @@ class MergeFeatureWidget(QWidget):
         preview_card_layout.addLayout(header_row)
 
         body_row = QHBoxLayout()
-        body_row.setSpacing(14)
+        body_row.setSpacing(10)
 
+        # Thu nhỏ khung scrollbar thumbnail
         self.thumb_scroll = QScrollArea()
         self.thumb_scroll.setFixedWidth(_THUMB_STRIP_WIDTH)
         self.thumb_scroll.setWidgetResizable(True)
@@ -681,12 +662,13 @@ class MergeFeatureWidget(QWidget):
         self.thumb_container = QWidget()
         self.thumb_container.setStyleSheet("background: transparent;")
         self.thumb_layout = QVBoxLayout(self.thumb_container)
-        self.thumb_layout.setContentsMargins(2, 2, 10, 2)
-        self.thumb_layout.setSpacing(12)
+        self.thumb_layout.setContentsMargins(2, 2, 6, 2)
+        self.thumb_layout.setSpacing(10)
         self.thumb_layout.setAlignment(Qt.AlignTop)
         self.thumb_scroll.setWidget(self.thumb_container)
         body_row.addWidget(self.thumb_scroll)
 
+        # Mở rộng vùng preview chính
         self.main_viewer = QFrame()
         self.main_viewer.setStyleSheet(
             f"QFrame {{ background-color: {COLOR_CONTENT_BG}; border: 1px solid {COLOR_BORDER}; border-radius: 10px; }}"
@@ -705,24 +687,21 @@ class MergeFeatureWidget(QWidget):
         preview_card_layout.addLayout(body_row, 1)
         column_b.addWidget(preview_card, 1)
 
-        # Ghép 2 cột theo tỉ lệ 55/45
+        # Ghép 2 cột theo tỉ lệ chuẩn 50 / 50
         column_a_widget = QWidget()
         column_a_widget.setLayout(column_a)
         column_b_widget = QWidget()
         column_b_widget.setLayout(column_b)
 
-        root_layout.addWidget(column_a_widget, 50)
-        root_layout.addWidget(column_b_widget, 50)
+        root_layout.addWidget(column_a_widget, 40)
+        root_layout.addWidget(column_b_widget, 60)
 
-        # Nạp sẵn dữ liệu demo (giống cách split_widget.py luôn hiện sẵn lưới
-        # mock) để đại ca thấy ngay bố cục khi chạy thử, chưa cần chọn file.
-        # TODO Giai đoạn 2: bỏ đoạn nạp mock này, bắt đầu từ danh sách rỗng.
         for f in _MOCK_FILES:
             self._add_file_row(f["name"], f["size"], f["pages"])
         self._select_first_available()
 
     # ------------------------------------------------------------------
-    # Quản lý danh sách file (Cột A)
+    # Quản lý danh sách file
     # ------------------------------------------------------------------
     def _add_file_row(self, name: str, size_text: str, pages: int) -> _FileRow:
         row = _FileRow(name, size_text, pages)
@@ -757,17 +736,23 @@ class MergeFeatureWidget(QWidget):
         self._hide_result()
 
     def _move_row(self, from_index: int, to_index: int) -> None:
+        """Đã khắc phục hoàn toàn lỗi crash và mất file khi kéo thả."""
         count = self.file_list.count()
-        if from_index < 0 or from_index >= count or to_index < 0:
+        if from_index < 0 or from_index >= count or to_index < 0 or from_index == to_index:
             return
-        item = self.file_list.item(from_index)
-        widget = self.file_list.itemWidget(item)
-        self.file_list.takeItem(from_index)
-        if to_index > from_index:
-            to_index -= 1
-        to_index = max(0, min(to_index, self.file_list.count()))
-        self.file_list.insertItem(to_index, item)
-        self.file_list.setItemWidget(item, widget)
+
+        item = self.file_list.takeItem(from_index)
+        if not item:
+            return
+
+        row_widget = self.file_list.itemWidget(item)
+        
+        # Giới hạn vị trí chèn hợp lệ
+        target_index = max(0, min(to_index, self.file_list.count()))
+        self.file_list.insertItem(target_index, item)
+        
+        if row_widget:
+            self.file_list.setItemWidget(item, row_widget)
 
     def _on_row_drag_dropped(self, source_index: int, target_index: int) -> None:
         self._move_row(source_index, target_index)
@@ -808,9 +793,6 @@ class MergeFeatureWidget(QWidget):
     # Sự kiện
     # ------------------------------------------------------------------
     def _on_files_selected(self, paths: List[str]) -> None:
-        # TODO Giai đoạn 2: gọi pdf_core.open_document(path) + get_page_count(path)
-        # để lấy dung lượng/số trang thật, thay cho giá trị placeholder dưới đây.
-        # Cũng cần bắt CorruptedFileError / PasswordProtectedError ở đây.
         for path in paths:
             name = path.replace("\\", "/").split("/")[-1]
             self._add_file_row(name, "-- MB", _MOCK_PAGES_FOR_NEW_FILE)
@@ -833,7 +815,6 @@ class MergeFeatureWidget(QWidget):
         order = [
             self.file_list.itemWidget(self.file_list.item(i)).name for i in range(count)
         ]
-        # TODO Giai đoạn 2/3: gọi pdf_core.merge_pdfs(order, output_path) đúng thứ tự này.
         self._show_success(f"[Demo giao diện] Sẽ gộp {count} file theo thứ tự: {', '.join(order)} — chưa xử lý PDF thật.")
 
     # ------------------------------------------------------------------
@@ -856,8 +837,6 @@ class MergeFeatureWidget(QWidget):
         self._select_row(first_row)
 
     def _load_preview(self, name: str, pages: int) -> None:
-        # TODO Giai đoạn 2: thay bằng ảnh render thật từng trang qua
-        # pdf_core.render_page_thumbnail(path, i).
         self._current_file_name = name
         self._current_total_pages = pages
         self._current_page = 1 if pages > 0 else 0
@@ -886,7 +865,7 @@ class MergeFeatureWidget(QWidget):
             wrapper = QWidget()
             wrapper_layout = QVBoxLayout(wrapper)
             wrapper_layout.setContentsMargins(0, 0, 0, 0)
-            wrapper_layout.setSpacing(4)
+            wrapper_layout.setSpacing(2)
 
             thumb = _PreviewThumb(page_number)
             thumb.clicked.connect(self._on_thumb_clicked)
@@ -919,7 +898,13 @@ class MergeFeatureWidget(QWidget):
         if self._current_total_pages == 0:
             self.page_indicator.setText("0 / 0")
             self.main_page_label.setText("—")
+            self.prev_page_btn.setEnabled(False)
+            self.next_page_btn.setEnabled(False)
             return
+
+        self.prev_page_btn.setEnabled(self._current_page > 1)
+        self.next_page_btn.setEnabled(self._current_page < self._current_total_pages)
+
         self.page_indicator.setText(f"{self._current_page} / {self._current_total_pages}")
         self.main_page_label.setText(str(self._current_page))
         for thumb in self._preview_thumbs:

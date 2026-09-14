@@ -2,8 +2,8 @@
 Giao diện tính năng Tách File (Split) — GIAI ĐOẠN THIẾT KẾ UI THUẦN.
 
 Bố cục 2 cột (A ~55% - B ~45%):
-- Cột A: A1 khối chọn file, A3 khung chứa tiêu đề + đường ngăn cách + lưới thumbnail.
-- Cột B: Khung chứa tiêu đề + đường ngăn cách + preview cuộn liên tục nhiều trang.
+- Cột A: A1 khối chọn file, A3 khung chứa tiêu đề + lưới thumbnail.
+- Cột B: Khung chứa tiêu đề + preview cuộn liên tục nhiều trang.
 """
 from __future__ import annotations
 
@@ -326,7 +326,7 @@ class SplitFeatureWidget(QWidget):
         self.drop_zone.file_selected.connect(self._on_file_selected)
         column_a.addWidget(self.drop_zone)
 
-        # --- Khung bao toàn bộ khu vực A3 (Header tiêu đề + Đường ngăn cách + Lưới Thumbnail) ---
+        # --- Khung bao toàn bộ khu vực A3 (Header tiêu đề + Lưới Thumbnail) ---
         a3_container = QFrame()
         a3_container.setStyleSheet(
             f"""
@@ -342,14 +342,14 @@ class SplitFeatureWidget(QWidget):
         a3_box_layout.setContentsMargins(0, 0, 0, 0)
         a3_box_layout.setSpacing(0)
 
-        # Header Tiêu đề A3 trong khung bao (Icon + Text)
+        # Header Tiêu đề A3 trong khung bao (Icon đen + Text)
         a3_header = QWidget()
         a3_header_layout = QHBoxLayout(a3_header)
         a3_header_layout.setContentsMargins(16, 12, 16, 12)
         a3_header_layout.setSpacing(8)
 
         a3_icon = QLabel()
-        a3_icon.setPixmap(qta.icon("mdi6.file-document-outline", color=COLOR_ACCENT).pixmap(QSize(18, 18)))
+        a3_icon.setPixmap(qta.icon("mdi6.file-document-outline", color="black").pixmap(QSize(18, 18)))
         a3_icon.setStyleSheet("background: transparent; border: none;")
         a3_header_layout.addWidget(a3_icon)
 
@@ -361,13 +361,6 @@ class SplitFeatureWidget(QWidget):
         )
         a3_header_layout.addWidget(self.a3_title_label, stretch=1)
         a3_box_layout.addWidget(a3_header)
-
-        # Đường ngăn cách giữa tiêu đề và nội dung lưới
-        a3_divider = QFrame()
-        a3_divider.setFrameShape(QFrame.HLine)
-        a3_divider.setFrameShadow(QFrame.Sunken)
-        a3_divider.setStyleSheet(f"background-color: {COLOR_BORDER}; border: none; max-height: 1px;")
-        a3_box_layout.addWidget(a3_divider)
 
         # A3: khung lưới thumbnail
         self.preview_scroll = QScrollArea()
@@ -466,7 +459,7 @@ class SplitFeatureWidget(QWidget):
         spin_row.addLayout(arrows_col)
         bottom_row.addWidget(spin_container)
 
-        # Nhãn "Tùy chỉnh" + Checkbox — thứ tự: Tùy chỉnh - Checkbox
+        # Nhãn "Tùy chỉnh" + Checkbox
         custom_group = QHBoxLayout()
         custom_group.setContentsMargins(0, 0, 0, 0)
         custom_group.setSpacing(8)
@@ -553,7 +546,7 @@ class SplitFeatureWidget(QWidget):
         column_b = QVBoxLayout()
         column_b.setSpacing(0)
 
-        # Khung bao toàn bộ Cột B (Header tiêu đề + Đường ngăn cách + Preview cuộn)
+        # Khung bao toàn bộ Cột B (Header tiêu đề + Preview cuộn)
         preview_box_container = QFrame()
         preview_box_container.setStyleSheet(
             f"""
@@ -569,14 +562,14 @@ class SplitFeatureWidget(QWidget):
         preview_box_layout.setContentsMargins(0, 0, 0, 0)
         preview_box_layout.setSpacing(0)
 
-        # Header Tiêu đề Cột B trong khung bao (Icon + Text)
+        # Header Tiêu đề Cột B trong khung bao (Icon đen + Text)
         b_header = QWidget()
         b_header_layout = QHBoxLayout(b_header)
         b_header_layout.setContentsMargins(16, 12, 16, 12)
         b_header_layout.setSpacing(8)
 
         b_icon = QLabel()
-        b_icon.setPixmap(qta.icon("mdi6.eye-outline", color=COLOR_ACCENT).pixmap(QSize(18, 18)))
+        b_icon.setPixmap(qta.icon("mdi6.eye-outline", color="black").pixmap(QSize(18, 18)))
         b_icon.setStyleSheet("background: transparent; border: none;")
         b_header_layout.addWidget(b_icon)
 
@@ -588,13 +581,6 @@ class SplitFeatureWidget(QWidget):
         )
         b_header_layout.addWidget(self.preview_title_label, stretch=1)
         preview_box_layout.addWidget(b_header)
-
-        # Đường ngăn cách giữa tiêu đề và vùng Preview bên dưới
-        b_divider = QFrame()
-        b_divider.setFrameShape(QFrame.HLine)
-        b_divider.setFrameShadow(QFrame.Sunken)
-        b_divider.setStyleSheet(f"background-color: {COLOR_BORDER}; border: none; max-height: 1px;")
-        preview_box_layout.addWidget(b_divider)
 
         # Khung Preview cuộn dọc
         self.preview_scroll_b = QScrollArea()

@@ -17,6 +17,8 @@ from src.ui.placeholder_widget import PlaceholderFeatureWidget
 from src.ui.welcome_screen import WelcomeScreen
 from src.ui.vishipel_theme import COLOR_CONTENT_BG
 from src.ui.tools.split_widget import SplitFeatureWidget
+from src.ui.tools.merge_widget import MergeFeatureWidget
+
 
 
 class MainWindow(QMainWindow):
@@ -51,14 +53,13 @@ class MainWindow(QMainWindow):
 
         # Các trang cho 5 tính năng, theo đúng thứ tự trong sidebar.py.
         # "split" đã có giao diện thật (đang ở giai đoạn UI thuần, xem
-        # split_widget.py); các tính năng còn lại vẫn dùng placeholder cho
-        # tới khi làm tới lượt (thứ tự Gộp → Chèn → Tách → Edit theo
-        # 05_lo_trinh_phat_trien.md — "split" được làm sớm ở đây chỉ để
         # đại ca duyệt giao diện, chưa đúng thứ tự nối logic thật).
         self._feature_pages: Dict[str, int] = {}
         for key, label, _icon in FEATURES:
             if key == "split":
                 page = SplitFeatureWidget()
+            elif key == "merge":
+                page = MergeFeatureWidget()
             else:
                 page = PlaceholderFeatureWidget(label)
             index = self.content_stack.addWidget(page)

@@ -1,0 +1,11 @@
+# Môi trường ảo (không đẩy lên Git)
+.venv/
+venv/
+ENV/
+
+# File cache của Python
+__pycache__/
+*.py[cod]
+
+# Cấu hình riêng của IDE
+.vscode/

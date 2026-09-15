@@ -1,17 +1,21 @@
 """
-Giao diện tính năng Tách File (Split) — GIAI ĐOẠN THIẾT KẾ UI THUẦN.
+Giao diện tính năng Tách File (Split) — ĐÃ NỐI LOGIC THẬT với pdf_core.py.
 
 Bố cục 2 cột (A ~55% - B ~45%):
-- Cột A: A1 khối chọn file, A3 khung chứa tiêu đề + lưới thumbnail.
-- Cột B: Khung chứa tiêu đề + preview cuộn liên tục nhiều trang.
+- Cột A: A1 khối chọn file, A3 khung chứa tiêu đề + lưới thumbnail (render thật).
+- Cột B: Khung chứa tiêu đề + preview cuộn liên tục nhiều trang (render thật).
+
+Render thumbnail/preview chạy nền qua QThread (_PageRenderWorker) để không đơ UI
+khi file nhiều trang — cập nhật ảnh từng trang một ngay khi render xong (progressive).
 """
 from __future__ import annotations
 
+import os
 from typing import Dict, List, Optional
 
 import qtawesome as qta
-from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtCore import Qt, Signal, QSize, QThread
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPixmap
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -24,6 +28,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QFrame,
     QFileDialog,
+    QMessageBox,
 )
 
 from src.ui.vishipel_theme import (
@@ -40,14 +45,29 @@ from src.ui.vishipel_theme import (
     CORNER_RADIUS,
 )
 
-# Số trang giả dùng để dựng lưới xem trước khi chưa có pdf_core.py thật.
-_MOCK_PAGE_COUNT = 9
+from src.pdf_core import (
+    CorruptedFileError,
+    PasswordProtectedError,
+    FileLockedError,
+    PageInfo,
+    PageRenderer,
+    list_page_infos,
+    split_by_fixed_count,
+    split_by_flags,
+)
+from src.logger import log_info, log_error
+
 _GRID_COLUMNS = 3
 _THUMB_SIZE = 128
 _FLAG_BAR_WIDTH = 6
 
+# Kích thước render thực tế lớn hơn kích thước hiển thị để ảnh nét, đặc biệt trên
+# màn hình có DPI cao — sau đó co lại vừa khung hiển thị (KeepAspectRatio).
+_THUMB_RENDER_WIDTH = 220
+_PREVIEW_RENDER_WIDTH = 700
+
 _PREVIEW_PAGE_WIDTH = 340
-_PREVIEW_PAGE_HEIGHT = 460
+_PREVIEW_PAGE_HEIGHT_DEFAULT = 460
 
 _CHECKBOX_SIZE = 22
 _CHECKBOX_RADIUS = round(CORNER_RADIUS * _CHECKBOX_SIZE / CONTROL_HEIGHT)
@@ -102,7 +122,50 @@ _SCROLLBAR_QSS = f"""
 
 
 # ----------------------------------------------------------------------
-# A3 — 1 ô trong lưới thumbnail: thumbnail giả + vạch cờ đỏ bên phải
+# Worker nền: render thumbnail + preview cho từng trang, không đụng UI thread
+# ----------------------------------------------------------------------
+class _PageRenderWorker(QThread):
+    """Render tuần tự từng trang (thumbnail nhỏ cho Cột A + ảnh lớn cho Cột B),
+    phát tín hiệu ngay khi xong 1 trang để UI cập nhật dần (progressive), không
+    chờ render hết toàn bộ file mới hiển thị gì đó."""
+
+    page_rendered = Signal(int, bytes, bytes)  # page_index (0-based), thumb_png, preview_png
+    render_error = Signal(str)
+
+    def __init__(self, path: str, page_count: int, renderer: PageRenderer,
+                 parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._path = path
+        self._page_count = page_count
+        self._renderer = renderer
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    def run(self) -> None:
+        try:
+            for i in range(self._page_count):
+                if self._cancelled:
+                    return
+                thumb_bytes = self._renderer.render_thumbnail(
+                    self._path, i, max_width=_THUMB_RENDER_WIDTH
+                )
+                if self._cancelled:
+                    return
+                preview_bytes = self._renderer.render_page_detail(
+                    self._path, i, target_width=_PREVIEW_RENDER_WIDTH
+                )
+                if self._cancelled:
+                    return
+                self.page_rendered.emit(i, thumb_bytes, preview_bytes)
+        except Exception as exc:  # không để lỗi render làm crash thread ngầm
+            self.render_error.emit(str(exc))
+
+
+# ----------------------------------------------------------------------
+# A3 — 1 ô trong lưới thumbnail: số trang (lúc đang tải) → ảnh thật (khi render xong)
+#      + vạch cờ đỏ bên phải
 # ----------------------------------------------------------------------
 class _PageThumbnail(QWidget):
     clicked = Signal(int)
@@ -124,13 +187,23 @@ class _PageThumbnail(QWidget):
 
         card_layout = QVBoxLayout(self.card)
         card_layout.setContentsMargins(0, 0, 0, 0)
-        number_label = QLabel(str(page_number))
-        number_label.setAlignment(Qt.AlignCenter)
-        number_label.setStyleSheet(
-            f"color: {COLOR_TEXT_PRIMARY}; font-size: 26px; font-weight: 700; "
+
+        # Số trang — hiển thị khi chưa render xong (trạng thái "đang tải")
+        self.number_label = QLabel(str(page_number))
+        self.number_label.setAlignment(Qt.AlignCenter)
+        self.number_label.setStyleSheet(
+            f"color: {COLOR_TEXT_SECONDARY}; font-size: 26px; font-weight: 700; "
             "background: transparent; border: none;"
         )
-        card_layout.addWidget(number_label)
+        card_layout.addWidget(self.number_label)
+
+        # Ảnh thumbnail thật — ẩn cho tới khi render xong
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setStyleSheet("background: transparent; border: none;")
+        self.image_label.hide()
+        card_layout.addWidget(self.image_label)
+
         row_layout.addWidget(self.card)
 
         self.flag_bar = QFrame()
@@ -165,6 +238,18 @@ class _PageThumbnail(QWidget):
 
     def reset_flag(self) -> None:
         self.set_flagged(False)
+
+    def set_thumbnail_image(self, png_bytes: bytes) -> None:
+        """Gắn ảnh thumbnail thật đã render — thay thế số trang đang hiển thị tạm."""
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(png_bytes):
+            return
+        scaled = pixmap.scaled(
+            _THUMB_SIZE - 12, _THUMB_SIZE - 12, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        self.image_label.setPixmap(scaled)
+        self.image_label.show()
+        self.number_label.hide()
 
     def mousePressEvent(self, event) -> None:
         super().mousePressEvent(event)
@@ -304,14 +389,17 @@ class _DropZone(QFrame):
 # Widget chính
 # ----------------------------------------------------------------------
 class SplitFeatureWidget(QWidget):
-    """Giao diện tính năng Tách File — GIAI ĐOẠN UI THUẦN."""
+    """Giao diện tính năng Tách File — ĐÃ NỐI LOGIC THẬT (pdf_core.py)."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
         self._selected_file_path: Optional[str] = None
+        self._page_infos: List[PageInfo] = []
         self._thumbnails: List[_PageThumbnail] = []
         self._preview_pages: Dict[int, QFrame] = {}
+        self._renderer = PageRenderer()
+        self._render_worker: Optional[_PageRenderWorker] = None
 
         root_layout = QHBoxLayout(self)
         root_layout.setContentsMargins(28, 24, 28, 24)
@@ -353,7 +441,6 @@ class SplitFeatureWidget(QWidget):
         a3_icon.setStyleSheet("background: transparent; border: none;")
         a3_header_layout.addWidget(a3_icon)
 
-        # TODO Giai đoạn 2: Cập nhật tên file thực tế vào self.a3_title_label khi mở file thành công
         self.a3_title_label = QLabel('File được chọn: ""')
         self.a3_title_label.setStyleSheet(
             f"color: {COLOR_TEXT_PRIMARY}; font-size: 14px; font-weight: 700; "
@@ -379,9 +466,16 @@ class SplitFeatureWidget(QWidget):
         self.thumb_grid.setContentsMargins(28, 28, 28, 28)
         self.thumb_grid.setHorizontalSpacing(22)
         self.thumb_grid.setVerticalSpacing(22)
-        self._build_mock_grid()
         self.preview_scroll.setWidget(grid_container)
         a3_box_layout.addWidget(self.preview_scroll, stretch=1)
+
+        # Nhãn trạng thái rỗng — hiển thị khi chưa chọn file nào
+        self.empty_state_label = QLabel("Chưa có file nào được chọn.\nVui lòng chọn file PDF để bắt đầu.")
+        self.empty_state_label.setAlignment(Qt.AlignCenter)
+        self.empty_state_label.setStyleSheet(
+            f"color: {COLOR_TEXT_SECONDARY}; font-size: 13px; background: transparent; border: none;"
+        )
+        a3_box_layout.addWidget(self.empty_state_label)
 
         column_a.addWidget(a3_container, stretch=1)
 
@@ -573,7 +667,6 @@ class SplitFeatureWidget(QWidget):
         b_icon.setStyleSheet("background: transparent; border: none;")
         b_header_layout.addWidget(b_icon)
 
-        # TODO Giai đoạn 2: Cập nhật tên file thực tế vào self.preview_title_label khi mở file thành công
         self.preview_title_label = QLabel('Xem trước: ""')
         self.preview_title_label.setStyleSheet(
             f"color: {COLOR_TEXT_PRIMARY}; font-size: 14px; font-weight: 700; "
@@ -597,11 +690,10 @@ class SplitFeatureWidget(QWidget):
 
         preview_container = QWidget()
         preview_container.setStyleSheet("background: transparent;")
-        preview_layout = QVBoxLayout(preview_container)
-        preview_layout.setContentsMargins(16, 16, 16, 16)
-        preview_layout.setSpacing(16)
-        preview_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
-        self._build_mock_preview_pages(preview_layout)
+        self.preview_layout = QVBoxLayout(preview_container)
+        self.preview_layout.setContentsMargins(16, 16, 16, 16)
+        self.preview_layout.setSpacing(16)
+        self.preview_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self.preview_scroll_b.setWidget(preview_container)
 
         preview_box_layout.addWidget(self.preview_scroll_b, stretch=1)
@@ -616,53 +708,155 @@ class SplitFeatureWidget(QWidget):
         root_layout.addWidget(column_a_widget, stretch=55)
         root_layout.addWidget(column_b_widget, stretch=45)
 
-        # Mặc định chọn trang 1
-        self._select_page(1)
+        self._update_empty_state()
 
     # ------------------------------------------------------------------
-    # Xây lưới thumbnail giả (A3)
+    # Trạng thái rỗng (chưa chọn file)
     # ------------------------------------------------------------------
-    def _build_mock_grid(self) -> None:
-        for i in range(_MOCK_PAGE_COUNT):
+    def _update_empty_state(self) -> None:
+        has_file = self._selected_file_path is not None
+        self.empty_state_label.setVisible(not has_file)
+        self.preview_scroll.setVisible(has_file)
+
+    # ------------------------------------------------------------------
+    # Dựng / dọn lưới thumbnail (Cột A) + dải preview (Cột B) theo file thật
+    # ------------------------------------------------------------------
+    def _clear_grid_and_preview(self) -> None:
+        for thumb in self._thumbnails:
+            self.thumb_grid.removeWidget(thumb)
+            thumb.deleteLater()
+        self._thumbnails.clear()
+
+        for frame in self._preview_pages.values():
+            self.preview_layout.removeWidget(frame)
+            frame.deleteLater()
+        self._preview_pages.clear()
+
+    def _build_real_grid(self, page_infos: List[PageInfo]) -> None:
+        for i in range(len(page_infos)):
             page_number = i + 1
             row, col = divmod(i, _GRID_COLUMNS)
-
             thumb = _PageThumbnail(page_number)
             thumb.clicked.connect(self._on_thumbnail_clicked)
             self.thumb_grid.addWidget(thumb, row, col)
             self._thumbnails.append(thumb)
 
-    # ------------------------------------------------------------------
-    # Xây các trang Preview giả — xếp dọc liên tục để cuộn (Cột B)
-    # ------------------------------------------------------------------
-    def _build_mock_preview_pages(self, layout: QVBoxLayout) -> None:
-        for i in range(_MOCK_PAGE_COUNT):
-            page_number = i + 1
-            page_frame = QFrame()
-            page_frame.setFixedSize(_PREVIEW_PAGE_WIDTH, _PREVIEW_PAGE_HEIGHT)
-            page_frame.setStyleSheet(
-                f"QFrame {{ background-color: white; border: 1px solid {COLOR_BORDER}; border-radius: 6px; }}"
-            )
-            page_layout = QVBoxLayout(page_frame)
-            page_layout.setAlignment(Qt.AlignCenter)
-            number_label = QLabel(str(page_number))
-            number_label.setAlignment(Qt.AlignCenter)
-            number_label.setStyleSheet(
-                f"color: {COLOR_TEXT_SECONDARY}; font-size: 48px; font-weight: 700; "
-                "background: transparent; border: none;"
-            )
-            page_layout.addWidget(number_label)
+    def _create_preview_frame(self, page_number: int, info: PageInfo) -> QFrame:
+        height = _PREVIEW_PAGE_HEIGHT_DEFAULT
+        if info.width and info.height:
+            height = round(_PREVIEW_PAGE_WIDTH * (info.height / info.width))
 
-            layout.addWidget(page_frame, alignment=Qt.AlignHCenter)
-            self._preview_pages[page_number] = page_frame
+        frame = QFrame()
+        frame.setFixedSize(_PREVIEW_PAGE_WIDTH, height)
+        frame.setStyleSheet(
+            f"QFrame {{ background-color: white; border: 1px solid {COLOR_BORDER}; border-radius: 6px; }}"
+        )
+        frame_layout = QVBoxLayout(frame)
+        frame_layout.setContentsMargins(0, 0, 0, 0)
+        frame_layout.setAlignment(Qt.AlignCenter)
+
+        number_label = QLabel(str(page_number))
+        number_label.setAlignment(Qt.AlignCenter)
+        number_label.setStyleSheet(
+            f"color: {COLOR_TEXT_SECONDARY}; font-size: 48px; font-weight: 700; "
+            "background: transparent; border: none;"
+        )
+        frame_layout.addWidget(number_label)
+
+        image_label = QLabel()
+        image_label.setAlignment(Qt.AlignCenter)
+        image_label.setStyleSheet("background: transparent; border: none;")
+        image_label.hide()
+        frame_layout.addWidget(image_label)
+
+        # Gắn tham chiếu để cập nhật ảnh sau khi render xong (xem _set_preview_frame_image)
+        frame.number_label = number_label
+        frame.image_label = image_label
+        return frame
+
+    def _build_real_preview(self, page_infos: List[PageInfo]) -> None:
+        for i, info in enumerate(page_infos):
+            page_number = i + 1
+            frame = self._create_preview_frame(page_number, info)
+            self.preview_layout.addWidget(frame, alignment=Qt.AlignHCenter)
+            self._preview_pages[page_number] = frame
+
+    def _set_preview_frame_image(self, frame: QFrame, png_bytes: bytes) -> None:
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(png_bytes):
+            return
+        scaled = pixmap.scaled(
+            frame.width() - 4, frame.height() - 4, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        frame.image_label.setPixmap(scaled)
+        frame.image_label.show()
+        frame.number_label.hide()
+
+    # ------------------------------------------------------------------
+    # Render nền (QThread)
+    # ------------------------------------------------------------------
+    def _cancel_render_worker(self) -> None:
+        if self._render_worker is not None:
+            self._render_worker.page_rendered.disconnect(self._on_page_rendered)
+            self._render_worker.render_error.disconnect(self._on_render_error)
+            self._render_worker.cancel()
+            self._render_worker.wait()
+            self._render_worker = None
+
+    def _start_render_worker(self, path: str, page_count: int) -> None:
+        worker = _PageRenderWorker(path, page_count, self._renderer, parent=self)
+        worker.page_rendered.connect(self._on_page_rendered)
+        worker.render_error.connect(self._on_render_error)
+        self._render_worker = worker
+        worker.start()
+
+    def _on_page_rendered(self, page_index: int, thumb_bytes: bytes, preview_bytes: bytes) -> None:
+        if page_index < len(self._thumbnails):
+            self._thumbnails[page_index].set_thumbnail_image(thumb_bytes)
+
+        page_number = page_index + 1
+        frame = self._preview_pages.get(page_number)
+        if frame is not None:
+            self._set_preview_frame_image(frame, preview_bytes)
+
+    def _on_render_error(self, message: str) -> None:
+        log_error(f"Lỗi khi render trang xem trước: {message}")
+        self._show_error("Có lỗi khi hiển thị một số trang xem trước (xem app.log để biết chi tiết).")
 
     # ------------------------------------------------------------------
     # Sự kiện
     # ------------------------------------------------------------------
     def _on_file_selected(self, path: str) -> None:
-        self._selected_file_path = path
-        self._select_page(1)
+        self._cancel_render_worker()
         self._hide_result()
+
+        try:
+            page_infos = list_page_infos(path)
+        except PasswordProtectedError:
+            self._show_error("File có mật khẩu, chưa hỗ trợ mở file loại này.")
+            return
+        except CorruptedFileError:
+            self._show_error("Không thể đọc file, file có thể bị hỏng.")
+            return
+        except Exception as exc:  # phòng lỗi phát sinh ngoài dự kiến
+            log_error("Lỗi không xác định khi mở file trong tính năng Tách file", exc)
+            self._show_error("Đã xảy ra lỗi không xác định khi mở file.")
+            return
+
+        self._selected_file_path = path
+        self._page_infos = page_infos
+
+        self._clear_grid_and_preview()
+        self._build_real_grid(page_infos)
+        self._build_real_preview(page_infos)
+        self._update_empty_state()
+
+        filename = os.path.basename(path)
+        self.a3_title_label.setText(f'File được chọn: "{filename}"')
+        self.preview_title_label.setText(f'Xem trước: "{filename}"')
+
+        self._select_page(1)
+        self._start_render_worker(path, len(page_infos))
 
     def _on_custom_toggled(self, checked: bool) -> None:
         self.pages_per_file_spin.setDisabled(checked)
@@ -675,16 +869,22 @@ class SplitFeatureWidget(QWidget):
     def _on_thumbnail_clicked(self, page_number: int) -> None:
         self._select_page(page_number)
         if self.custom_checkbox.isChecked():
-            thumb = self._thumbnails[page_number - 1]
-            thumb.set_flagged(not thumb.is_flagged)
+            # Trang cuối cùng không có "ranh giới sau nó" trong file nên bỏ qua,
+            # tránh tạo cờ không hợp lệ khi gọi pdf_core.split_by_flags.
+            if page_number < len(self._thumbnails):
+                thumb = self._thumbnails[page_number - 1]
+                thumb.set_flagged(not thumb.is_flagged)
 
     def _on_clear_clicked(self) -> None:
+        self._cancel_render_worker()
         self._selected_file_path = None
+        self._page_infos = []
         self.custom_checkbox.setChecked(False)
         self.pages_per_file_spin.setValue(1)
-        for thumb in self._thumbnails:
-            thumb.reset_flag()
-        self._select_page(1)
+        self._clear_grid_and_preview()
+        self._update_empty_state()
+        self.a3_title_label.setText('File được chọn: ""')
+        self.preview_title_label.setText('Xem trước: ""')
         self._hide_result()
 
     def _select_page(self, page_number: int) -> None:
@@ -694,23 +894,116 @@ class SplitFeatureWidget(QWidget):
         if target is not None:
             self.preview_scroll_b.ensureWidgetVisible(target, 0, 0)
 
+    # ------------------------------------------------------------------
+    # Tách file thật
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _compute_fixed_segments(total: int, pages_per_file: int) -> List[tuple]:
+        """Dự đoán các đoạn (start, end) — PHẢI khớp logic split_by_fixed_count trong
+        pdf_core.py. Chỉ dùng để đoán trước tên file, kiểm tra trùng tên trước khi ghi;
+        việc tách file thật luôn do pdf_core thực hiện."""
+        segments = []
+        start = 0
+        while start < total:
+            end = min(start + pages_per_file, total) - 1
+            segments.append((start, end))
+            start = end + 1
+        return segments
+
+    @staticmethod
+    def _compute_flag_segments(total: int, flag_positions: List[int]) -> List[tuple]:
+        """Dự đoán các đoạn (start, end) — PHẢI khớp logic split_by_flags trong pdf_core.py."""
+        boundaries = sorted(set(flag_positions))
+        segments = []
+        start = 0
+        for b in boundaries:
+            segments.append((start, b))
+            start = b + 1
+        segments.append((start, total - 1))
+        return segments
+
     def _on_split_clicked(self) -> None:
         if not self._selected_file_path:
             self._show_error("Vui lòng chọn file PDF trước khi tách.")
             return
 
-        if not self.custom_checkbox.isChecked():
+        total = len(self._page_infos)
+        base_name = os.path.splitext(os.path.basename(self._selected_file_path))[0]
+
+        use_flags = self.custom_checkbox.isChecked()
+        if not use_flags:
             n = self.pages_per_file_spin.value()
             if n < 1:
                 self._show_error("Số trang mỗi file phải lớn hơn hoặc bằng 1.")
                 return
-            self._show_success(f"[Demo giao diện] Sẽ tách theo {n} trang/file — chưa xử lý PDF thật.")
+            segments = self._compute_fixed_segments(total, n)
         else:
-            flagged = [t.page_number for t in self._thumbnails if t.is_flagged]
-            if not flagged:
+            flag_positions = sorted(
+                t.page_number - 1 for t in self._thumbnails if t.is_flagged
+            )
+            if not flag_positions:
                 self._show_error("Vui lòng đặt ít nhất 1 cờ trước khi tách.")
                 return
-            self._show_success(f"[Demo giao diện] Sẽ tách tại các cờ sau trang: {flagged} — chưa xử lý PDF thật.")
+            segments = self._compute_flag_segments(total, flag_positions)
+
+        # Chọn thư mục lưu kết quả (Save As style) — tên file dùng mặc định pdf_core tự sinh
+        output_dir = QFileDialog.getExistingDirectory(self, "Chọn thư mục lưu kết quả")
+        if not output_dir:
+            return  # người dùng hủy chọn thư mục
+
+        predicted_names = [f"{base_name}_p{s + 1}-{e + 1}.pdf" for s, e in segments]
+        duplicates = [n for n in predicted_names if os.path.exists(os.path.join(output_dir, n))]
+        if duplicates:
+            msg_box = QMessageBox(self)
+            msg_box.setIcon(QMessageBox.Warning)
+            msg_box.setWindowTitle("Trùng tên file")
+            msg_box.setText(
+                f"Đã có {len(duplicates)} file trùng tên trong thư mục đã chọn.\n"
+                "Bạn có muốn ghi đè tất cả không?"
+            )
+            btn_overwrite = msg_box.addButton("Ghi đè tất cả", QMessageBox.AcceptRole)
+            msg_box.addButton("Hủy", QMessageBox.RejectRole)
+            msg_box.exec()
+            if msg_box.clickedButton() != btn_overwrite:
+                return
+
+        try:
+            if not use_flags:
+                output_paths = split_by_fixed_count(
+                    self._selected_file_path, n, output_dir, base_name
+                )
+            else:
+                output_paths = split_by_flags(
+                    self._selected_file_path, flag_positions, output_dir, base_name
+                )
+        except PasswordProtectedError:
+            log_error(f"Tách file thất bại (file có mật khẩu): {self._selected_file_path}")
+            self._show_error("File có mật khẩu, không thể xử lý.")
+            return
+        except CorruptedFileError:
+            log_error(f"Tách file thất bại (file hỏng): {self._selected_file_path}")
+            self._show_error("Không thể đọc file, file có thể bị hỏng.")
+            return
+        except FileLockedError:
+            log_error(f"Tách file thất bại (file bị khóa khi ghi): {output_dir}")
+            self._show_error(
+                "File đang được sử dụng bởi chương trình khác, vui lòng đóng và thử lại."
+            )
+            return
+        except ValueError as exc:
+            log_error(f"Tách file thất bại (dữ liệu không hợp lệ): {exc}", exc)
+            self._show_error(str(exc))
+            return
+        except Exception as exc:  # phòng lỗi phát sinh ngoài dự kiến
+            log_error("Lỗi không xác định khi tách file", exc)
+            self._show_error("Đã xảy ra lỗi không xác định khi tách file.")
+            return
+
+        log_info(
+            f"Tách file thành công: '{self._selected_file_path}' -> {len(output_paths)} file "
+            f"tại '{output_dir}'"
+        )
+        self._show_success(f"Đã tách thành công {len(output_paths)} file, lưu tại: {output_dir}")
 
     # ------------------------------------------------------------------
     def _show_success(self, message: str) -> None:
@@ -725,3 +1018,8 @@ class SplitFeatureWidget(QWidget):
 
     def _hide_result(self) -> None:
         self.result_label.hide()
+
+    # ------------------------------------------------------------------
+    def closeEvent(self, event) -> None:
+        self._cancel_render_worker()
+        super().closeEvent(event)

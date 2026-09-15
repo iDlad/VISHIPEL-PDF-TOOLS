@@ -1,16 +1,13 @@
 """
 Cửa sổ chính của Vishipel PDF Tools — ghép Sidebar (trái) và khung nội dung
-(phải), dùng QStackedWidget để chuyển đổi giữa màn hình chào và 5 trang tính
-năng. Mở app lên hiển thị màn hình chào (welcome_screen.py) trước, chưa có
-mục nào ở sidebar được chọn sẵn — người dùng bấm 1 mục ở sidebar mới chuyển
-sang trang tính năng tương ứng. Bấm nút Home ở cuối sidebar sẽ quay lại màn
-hình chào này bất kỳ lúc nào.
+(phải), dùng SlidingStackedWidget để chuyển đổi giữa màn hình chào và 5 trang tính
+năng với hiệu ứng trượt từ trên xuống.
 """
 from __future__ import annotations
 
 from typing import Dict
 
-from PySide6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QStackedWidget
+from PySide6.QtWidgets import QMainWindow, QWidget, QHBoxLayout
 
 from src.ui.sidebar import Sidebar, FEATURES
 from src.ui.placeholder_widget import PlaceholderFeatureWidget
@@ -18,7 +15,7 @@ from src.ui.welcome_screen import WelcomeScreen
 from src.ui.vishipel_theme import COLOR_CONTENT_BG
 from src.ui.tools.split_widget import SplitFeatureWidget
 from src.ui.tools.merge_widget import MergeFeatureWidget
-
+from src.ui.animation_helper import SlidingStackedWidget  
 
 
 class MainWindow(QMainWindow):
@@ -34,26 +31,23 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        # --- Sidebar (trái) ---
+        # --- Sidebar (trái) - giữ nguyên, không ảnh hưởng hiệu ứng ---
         self.sidebar = Sidebar()
         self.sidebar.feature_selected.connect(self._on_feature_selected)
         self.sidebar.home_requested.connect(self._on_home_requested)
         self.sidebar.logout_requested.connect(self.close)
         root_layout.addWidget(self.sidebar)
 
-        # --- Khung nội dung (phải) ---
-        self.content_stack = QStackedWidget()
+        # --- Khung nội dung (phải) - Sử dụng SlidingStackedWidget ---
+        self.content_stack = SlidingStackedWidget()
         self.content_stack.setStyleSheet(f"background-color: {COLOR_CONTENT_BG};")
         root_layout.addWidget(self.content_stack, stretch=1)
 
-        # Trang màn hình chào — hiển thị mặc định khi mở app, trước khi người
-        # dùng chọn bất kỳ tính năng nào ở sidebar.
+        # Trang màn hình chào
         self.welcome_page = WelcomeScreen()
         self._welcome_index = self.content_stack.addWidget(self.welcome_page)
 
-        # Các trang cho 5 tính năng, theo đúng thứ tự trong sidebar.py.
-        # "split" đã có giao diện thật (đang ở giai đoạn UI thuần, xem
-        # đại ca duyệt giao diện, chưa đúng thứ tự nối logic thật).
+        # Các trang tính năng
         self._feature_pages: Dict[str, int] = {}
         for key, label, _icon in FEATURES:
             if key == "split":
@@ -65,14 +59,15 @@ class MainWindow(QMainWindow):
             index = self.content_stack.addWidget(page)
             self._feature_pages[key] = index
 
-        # Mặc định hiển thị màn hình chào — sidebar chưa chọn mục nào (xem sidebar.py).
+        # Mặc định hiển thị màn hình chào
         self.content_stack.setCurrentIndex(self._welcome_index)
 
     def _on_feature_selected(self, feature_key: str) -> None:
         index = self._feature_pages.get(feature_key)
         if index is not None:
-            self.content_stack.setCurrentIndex(index)
+            # Gọi hiệu ứng trượt từ trên xuống thay vì setCurrentIndex trực tiếp
+            self.content_stack.slide_to_index(index)
 
     def _on_home_requested(self) -> None:
-        """Bấm nút Home ở sidebar: quay khung nội dung về màn hình chào."""
-        self.content_stack.setCurrentIndex(self._welcome_index)
+        """Bấm nút Home ở sidebar: trượt mượt về màn hình chào."""
+        self.content_stack.slide_to_index(self._welcome_index)

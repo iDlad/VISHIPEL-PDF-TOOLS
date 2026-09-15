@@ -6,8 +6,8 @@ from __future__ import annotations
 from typing import List, Optional
 
 import qtawesome as qta
-from PySide6.QtCore import Qt, Signal, QSize, QMimeData
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QDrag
+from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -60,6 +60,10 @@ _THUMB_STRIP_WIDTH = 115
 _THUMB_W, _THUMB_H = 72, 94
 _BADGE_SIZE = 18
 _DRAG_THRESHOLD = 8
+# Đường kẻ báo vị trí sẽ chèn file khi kéo-thả (kiểu PowerPoint)
+_DROP_INDICATOR_COLOR = "#FA9005"
+_DROP_INDICATOR_HEIGHT = 4
+_DROP_INDICATOR_DOT_SIZE = 10
 
 _SCROLLBAR_QSS = f"""
     QScrollBar:vertical {{
@@ -191,11 +195,27 @@ class _DropZone(QFrame):
 # Danh sách file kéo-thả
 # ----------------------------------------------------------------------
 class _DraggableFileList(QListWidget):
+    """Danh sách file, hỗ trợ kéo-thả đổi thứ tự.
+
+    LƯU Ý: KHÔNG dùng cơ chế Drag & Drop gốc của Qt (QDrag/dragMoveEvent).
+    Lý do: mỗi dòng trong danh sách là 1 widget riêng gắn qua
+    setItemWidget(), và cơ chế DnD gốc của Qt xử lý không ổn định khi con
+    trỏ di chuyển qua nhiều item-widget khác nhau trong lúc kéo — sự kiện
+    dragMoveEvent chỉ tới đúng ở vài vị trí (thường chỉ đúng lúc vào ngay
+    dòng đầu tiên) rồi bị Qt "nuốt mất" ở các dòng còn lại, khiến đường kẻ
+    báo vị trí không hiển thị đúng.
+
+    Thay vào đó, việc kéo được tự viết bằng grabMouse() ở `_FileRow`: khi
+    bắt đầu kéo, dòng đó giữ toàn bộ sự kiện chuột cho riêng nó (dù con trỏ
+    đi qua bất kỳ dòng nào khác), rồi tự gọi các hàm bên dưới để cập nhật
+    đường kẻ và tính vị trí thả — ổn định tuyệt đối, không phụ thuộc vào
+    việc Qt có chuyển tiếp sự kiện đúng hay không.
+    """
+
     row_drag_dropped = Signal(int, int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setDragDropMode(QAbstractItemView.DropOnly)
         self.setSelectionMode(QAbstractItemView.NoSelection)
         self.setFocusPolicy(Qt.NoFocus)
         self.setFrameShape(QFrame.NoFrame)
@@ -208,37 +228,96 @@ class _DraggableFileList(QListWidget):
             {_SCROLLBAR_QSS}
             """
         )
+        # Vị trí (index) sẽ chèn file nếu thả ngay lúc này — None nghĩa là
+        # không đang kéo, ẩn đường kẻ.
+        self._drop_indicator_index: Optional[int] = None
 
-    def start_row_drag(self, source_index: int) -> None:
-        drag = QDrag(self)
-        mime = QMimeData()
-        mime.setText(str(source_index))
-        drag.setMimeData(mime)
-        drag.exec(Qt.MoveAction)
+        # QUAN TRỌNG: đường kẻ báo vị trí PHẢI là 1 widget con thật sự (chứ
+        # không phải vẽ bằng QPainter trong paintEvent) — vì mỗi dòng file
+        # (_FileRow) cũng là 1 widget con gắn qua setItemWidget(), và trong
+        # Qt, widget con LUÔN được vẽ đè lên trên bất kỳ thứ gì cha nó tự vẽ
+        # bằng QPainter trong paintEvent, bất kể thứ tự code. Nếu vẽ bằng
+        # QPainter, đường kẻ sẽ luôn bị các dòng file che kín. Dùng widget
+        # riêng + raise_() mỗi lần cập nhật thì đường kẻ luôn nổi lên trên
+        # cùng, hiển thị đúng ở MỌI vị trí.
+        self._drop_line = QFrame(self.viewport())
+        self._drop_line.setFixedHeight(_DROP_INDICATOR_HEIGHT)
+        self._drop_line.setStyleSheet(
+            f"background-color: {_DROP_INDICATOR_COLOR}; "
+            f"border-radius: {_DROP_INDICATOR_HEIGHT // 2}px;"
+        )
+        self._drop_line.hide()
 
-    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        if event.mimeData().hasText():
-            event.acceptProposedAction()
+        self._drop_dot = QFrame(self.viewport())
+        self._drop_dot.setFixedSize(_DROP_INDICATOR_DOT_SIZE, _DROP_INDICATOR_DOT_SIZE)
+        self._drop_dot.setStyleSheet(
+            f"background-color: {_DROP_INDICATOR_COLOR}; "
+            f"border-radius: {_DROP_INDICATOR_DOT_SIZE // 2}px;"
+        )
+        self._drop_dot.hide()
 
-    def dragMoveEvent(self, event) -> None:
-        if event.mimeData().hasText():
-            event.acceptProposedAction()
+    def compute_drop_index_from_viewport_pos(self, pos) -> int:
+        """Tính vị trí sẽ chèn file dựa vào con trỏ đang ở NỬA TRÊN hay
+        NỬA DƯỚI của dòng đang trỏ tới (kiểu PowerPoint khi kéo-thả slide),
+        thay vì luôn chèn trước dòng đó. `pos` phải là tọa độ trong hệ
+        viewport() của chính danh sách này."""
+        if self.count() == 0:
+            return 0
+        item = self.itemAt(pos)
+        if item is None:
+            first_rect = self.visualItemRect(self.item(0))
+            if pos.y() < first_rect.top():
+                return 0  # kéo lên phía trên dòng đầu tiên
+            return self.count()  # kéo xuống phía dưới dòng cuối cùng
+        index = self.row(item)
+        rect = self.visualItemRect(item)
+        if pos.y() > rect.center().y():
+            index += 1
+        return index
 
-    def dropEvent(self, event: QDropEvent) -> None:
-        if not event.mimeData().hasText():
-            return
-        try:
-            source_index = int(event.mimeData().text())
-        except ValueError:
-            return
-        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
-        target_item = self.itemAt(pos)
-        target_index = self.row(target_item) if target_item is not None else self.count() - 1
-        event.acceptProposedAction()
-        self.row_drag_dropped.emit(source_index, target_index)
+    def update_drop_indicator_from_pos(self, pos) -> None:
+        index = self.compute_drop_index_from_viewport_pos(pos)
+        self._drop_indicator_index = index
+        self._show_drop_indicator_at(index)
+
+    def _show_drop_indicator_at(self, index: int) -> None:
+        y = self._indicator_y_for_index(index)
+        viewport_width = self.viewport().width()
+        dot_radius = _DROP_INDICATOR_DOT_SIZE // 2
+        left = 6
+        line_left = left + _DROP_INDICATOR_DOT_SIZE + 2
+        line_right = max(line_left, viewport_width - 6)
+
+        self._drop_dot.move(left, y - dot_radius)
+        self._drop_line.setGeometry(
+            line_left, y - _DROP_INDICATOR_HEIGHT // 2,
+            max(0, line_right - line_left), _DROP_INDICATOR_HEIGHT,
+        )
+        self._drop_dot.show()
+        self._drop_line.show()
+        # Bắt buộc raise_() mỗi lần hiện — đảm bảo luôn nổi trên các dòng file
+        self._drop_dot.raise_()
+        self._drop_line.raise_()
+
+    def clear_drop_indicator(self) -> None:
+        self._drop_indicator_index = None
+        self._drop_line.hide()
+        self._drop_dot.hide()
+
+    def _indicator_y_for_index(self, index: int) -> int:
+        count = self.count()
+        if count == 0:
+            return 0
+        if index >= count:
+            return self.visualItemRect(self.item(count - 1)).bottom()
+        return self.visualItemRect(self.item(index)).top()
 
 
 class _DragHandle(QLabel):
+    """Icon '⋮⋮' chỉ mang tính gợi ý trực quan (có thể kéo dòng này) —
+    bản thân không xử lý sự kiện chuột, để việc kéo-thả có thể bắt đầu từ
+    BẤT KỲ đâu trên dòng (xử lý tại _FileRow), không riêng gì icon này."""
+
     def __init__(self, owner_row: "_FileRow", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.owner_row = owner_row
@@ -246,23 +325,8 @@ class _DragHandle(QLabel):
         self.setFixedSize(_HANDLE_ICON_SIZE, _HANDLE_ICON_SIZE)
         self.setCursor(Qt.OpenHandCursor)
         self.setStyleSheet("background: transparent; border: none;")
-        self._press_pos = None
-
-    def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.LeftButton:
-            self._press_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
-
-    def mouseMoveEvent(self, event) -> None:
-        if self._press_pos is None:
-            return
-        current_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
-        if (current_pos - self._press_pos).manhattanLength() < _DRAG_THRESHOLD:
-            return
-        self._press_pos = None
-        self.owner_row.start_drag()
-
-    def mouseReleaseEvent(self, event) -> None:
-        self._press_pos = None
+        # Không nhận sự kiện chuột -> tự động "xuyên qua" cho _FileRow (cha) xử lý
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
 
 # ----------------------------------------------------------------------
@@ -279,6 +343,8 @@ class _FileRow(QFrame):
         self.pages = pages
         self.is_selected = False
         self.list_widget: Optional[_DraggableFileList] = None
+        self._press_pos = None
+        self._dragging = False
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedHeight(66)
         self._apply_style()
@@ -375,16 +441,86 @@ class _FileRow(QFrame):
                 return i
         return None
 
-    def start_drag(self) -> None:
+    def _to_list_viewport_pos(self, local_pos: QPoint) -> Optional[QPoint]:
+        """Đổi tọa độ local (trên chính dòng này) sang tọa độ trong
+        viewport() của danh sách file — dùng để biết đang trỏ vào đâu
+        trong toàn bộ danh sách, kể cả khi con trỏ đang ở trên 1 dòng khác."""
         if self.list_widget is None:
-            return
-        index = self.current_index()
-        if index is not None:
-            self.list_widget.start_row_drag(index)
+            return None
+        global_pos = self.mapToGlobal(local_pos)
+        return self.list_widget.viewport().mapFromGlobal(global_pos)
 
+    # ------------------------------------------------------------------
+    # Nhấn giữ + kéo (ở BẤT KỲ đâu trên dòng) = sắp xếp lại vị trí.
+    # Nhấn rồi thả ra mà KHÔNG di chuyển = click chọn dòng để xem preview.
+    #
+    # Việc kéo dùng grabMouse() (không dùng QDrag của Qt) để dòng này giữ
+    # toàn bộ sự kiện chuột cho riêng nó trong suốt quá trình kéo, dù con
+    # trỏ đang ở trên bất kỳ dòng nào khác — xem giải thích chi tiết ở
+    # docstring của _DraggableFileList.
+    # ------------------------------------------------------------------
     def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._press_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+            self._dragging = False
         super().mousePressEvent(event)
-        self.clicked.emit()
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._press_pos is None:
+            super().mouseMoveEvent(event)
+            return
+        current_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+
+        if not self._dragging:
+            if (current_pos - self._press_pos).manhattanLength() < _DRAG_THRESHOLD:
+                super().mouseMoveEvent(event)
+                return
+            self._dragging = True
+            self.setCursor(Qt.ClosedHandCursor)
+            self.grabMouse()
+
+        viewport_pos = self._to_list_viewport_pos(current_pos)
+        if viewport_pos is not None and self.list_widget is not None:
+            self.list_widget.update_drop_indicator_from_pos(viewport_pos)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() != Qt.LeftButton:
+            super().mouseReleaseEvent(event)
+            return
+
+        was_dragging = self._dragging
+        current_pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+        self._dragging = False
+        self._press_pos = None
+
+        if not was_dragging:
+            self.clicked.emit()
+            super().mouseReleaseEvent(event)
+            return
+
+        # Kết thúc kéo: nhả grab + trả lại con trỏ trước, vì sau khi phát
+        # tín hiệu bên dưới, dòng này (self) có thể bị hủy và tạo lại mới
+        # hoàn toàn ngay lập tức nếu chính nó là dòng được kéo đi (xem
+        # _move_row) — nên phải làm hết mọi việc cần đến `self` TRƯỚC khi
+        # emit, và không được đụng tới `self` sau dòng emit.
+        self.releaseMouse()
+        self.setCursor(Qt.PointingHandCursor)
+
+        list_widget = self.list_widget
+        source_index = self.current_index()
+        list_widget.clear_drop_indicator() if list_widget is not None else None
+        viewport_pos = self._to_list_viewport_pos(current_pos)
+        target_index = (
+            list_widget.compute_drop_index_from_viewport_pos(viewport_pos)
+            if (list_widget is not None and viewport_pos is not None)
+            else None
+        )
+
+        if list_widget is not None and source_index is not None and target_index is not None:
+            list_widget.row_drag_dropped.emit(source_index, target_index)
+            return  # KHÔNG đụng self sau dòng này
+
+        super().mouseReleaseEvent(event)
 
 
 # ----------------------------------------------------------------------
@@ -703,12 +839,20 @@ class MergeFeatureWidget(QWidget):
     # ------------------------------------------------------------------
     # Quản lý danh sách file
     # ------------------------------------------------------------------
-    def _add_file_row(self, name: str, size_text: str, pages: int) -> _FileRow:
+    def _add_file_row(
+        self, name: str, size_text: str, pages: int, index: Optional[int] = None
+    ) -> _FileRow:
+        """Tạo 1 dòng file mới. Nếu `index` được truyền vào, chèn tại đúng
+        vị trí đó thay vì luôn thêm vào cuối danh sách (dùng khi kéo-thả sắp
+        xếp lại thứ tự, xem `_move_row`)."""
         row = _FileRow(name, size_text, pages)
         item = QListWidgetItem()
         item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
         item.setSizeHint(row.sizeHint())
-        self.file_list.addItem(item)
+        if index is None:
+            self.file_list.addItem(item)
+        else:
+            self.file_list.insertItem(index, item)
         self.file_list.setItemWidget(item, row)
         row.list_widget = self.file_list
         row.clicked.connect(lambda r=row: self._select_row(r))
@@ -736,23 +880,55 @@ class MergeFeatureWidget(QWidget):
         self._hide_result()
 
     def _move_row(self, from_index: int, to_index: int) -> None:
-        """Đã khắc phục hoàn toàn lỗi crash và mất file khi kéo thả."""
+        """Sắp xếp lại thứ tự file khi kéo-thả.
+
+        LƯU Ý QUAN TRỌNG (nguyên nhân lỗi cũ): Qt tự động HỦY (delete) ở tầng
+        C++ widget đã gắn qua `setItemWidget()` ngay khi item chứa nó bị lấy
+        ra khỏi QListWidget bằng `takeItem()` — đây là cơ chế "persistent
+        editor" nội bộ của Qt, không liên quan gì đến Python giữ hay không
+        giữ reference tới widget đó. Vì vậy KHÔNG được lấy item ra rồi chèn
+        lại và gắn lại đúng instance `_FileRow` cũ như trước đây — widget đó
+        đã là "xác chết" (C++ object đã bị xóa), dùng lại sẽ khiến dòng file
+        biến mất khỏi giao diện ngay lập tức, và crash với
+        `RuntimeError: ... already deleted` ngay khi có thao tác tiếp theo
+        chạm vào nó (VD: click chọn dòng, đổi style...).
+
+        Cách khắc phục: đọc dữ liệu (tên, size, số trang) từ dòng cũ trước,
+        xóa hẳn dòng cũ, rồi tạo MỚI hoàn toàn 1 `_FileRow` khác và chèn vào
+        đúng vị trí đích — giống đúng cách `_sort_files` đang làm.
+        """
         count = self.file_list.count()
-        if from_index < 0 or from_index >= count or to_index < 0 or from_index == to_index:
+        if from_index < 0 or from_index >= count or to_index < 0:
             return
 
-        item = self.file_list.takeItem(from_index)
-        if not item:
+        # `to_index` được _DraggableFileList.compute_drop_index_from_viewport_pos()
+        # tính trên
+        # danh sách ĐẦY ĐỦ (còn cả dòng nguồn). Nếu đích nằm sau nguồn, cần
+        # lùi lại 1 để khớp với danh sách sau khi đã bớt đi dòng nguồn.
+        if to_index > from_index:
+            to_index -= 1
+        if to_index == from_index:
+            return  # thả lại đúng vị trí cũ -> không làm gì
+
+        old_item = self.file_list.item(from_index)
+        old_row = self.file_list.itemWidget(old_item)
+        if old_row is None:
             return
 
-        row_widget = self.file_list.itemWidget(item)
-        
-        # Giới hạn vị trí chèn hợp lệ
+        # Lưu lại dữ liệu + trạng thái đang chọn của dòng cũ trước khi nó bị hủy
+        name, size_text, pages = old_row.name, old_row.size_text, old_row.pages
+        was_selected = old_row is self._selected_row
+        if was_selected:
+            self._selected_row = None
+
+        self.file_list.takeItem(from_index)  # widget cũ sẽ bị Qt tự hủy ở đây
+
+        # Giới hạn vị trí chèn hợp lệ sau khi danh sách đã ngắn đi 1 phần tử
         target_index = max(0, min(to_index, self.file_list.count()))
-        self.file_list.insertItem(target_index, item)
-        
-        if row_widget:
-            self.file_list.setItemWidget(item, row_widget)
+        new_row = self._add_file_row(name, size_text, pages, index=target_index)
+
+        if was_selected:
+            self._select_row(new_row)
 
     def _on_row_drag_dropped(self, source_index: int, target_index: int) -> None:
         self._move_row(source_index, target_index)

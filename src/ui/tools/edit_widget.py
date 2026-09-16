@@ -491,6 +491,10 @@ class EditFeatureWidget(QWidget):
         )
         delete_group_layout.addWidget(delete_label)
 
+        # Giãn cách riêng giữa nhãn "Xóa" và checkbox (tách biệt với spacing
+        # chung 6px giữa icon-nhãn, để không ảnh hưởng các cặp widget khác).
+        delete_group_layout.addSpacing(16)
+
         # Checkbox
         self.delete_checkbox = _CheckToggle()
         delete_group_layout.addWidget(self.delete_checkbox)

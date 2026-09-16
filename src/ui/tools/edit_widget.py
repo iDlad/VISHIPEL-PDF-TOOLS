@@ -49,7 +49,7 @@ from src.ui.vishipel_theme import (
 )
 
 # Số trang giả dùng để dựng lưới xem trước khi chưa có pdf_core.py thật.
-_MOCK_PAGE_COUNT = 9
+_MOCK_PAGE_COUNT = 11
 _GRID_COLUMNS = 3
 _THUMB_SIZE = 128
 

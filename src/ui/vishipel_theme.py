@@ -21,7 +21,7 @@ COLOR_BORDER = "#E5E7EB"           # Viền nhạt: khung card, khung cuộn, da
 COLOR_BORDER_STRONG = "#D1D5DB"    # Viền đậm hơn: input, checkbox, nút phụ (Clear...)
 
 # ----- Kích thước / font dùng chung -----
-SIDEBAR_WIDTH = 180
+SIDEBAR_WIDTH = 200
 FONT_FAMILY = "Segoe UI"
 
 # ----- Chuẩn control dùng chung cho MỌI tính năng (Split/Merge/Edit/Insert/Rename) -----

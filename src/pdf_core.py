@@ -171,13 +171,16 @@ def _safe_save(doc: fitz.Document, output_path: str) -> None:
 
 
 def _extract_pages_and_save(source_doc: fitz.Document, start: int, end: int,
-                             output_dir: str, base_name: str) -> str:
+                             output_dir: str, sequence_number: int) -> str:
     """Trích trang [start, end] (inclusive, 0-based) từ source_doc, lưu thành 1 file mới.
-    Dùng chung bởi split_by_fixed_count và split_by_flags."""
+    Dùng chung bởi split_by_fixed_count và split_by_flags.
+
+    Tên file: PDF_Split_<số thứ tự 2 chữ số> (VD: PDF_Split_01.pdf, PDF_Split_02.pdf...),
+    đánh số theo đúng thứ tự file được tạo ra, bắt đầu từ 01."""
     new_doc = fitz.open()
     try:
         new_doc.insert_pdf(source_doc, from_page=start, to_page=end)
-        output_path = os.path.join(output_dir, f"{base_name}_p{start + 1}-{end + 1}.pdf")
+        output_path = os.path.join(output_dir, f"PDF_Split_{sequence_number:02d}.pdf")
         _safe_save(new_doc, output_path)
     finally:
         new_doc.close()
@@ -191,7 +194,11 @@ def _extract_pages_and_save(source_doc: fitz.Document, start: int, end: int,
 def split_by_fixed_count(path: str, pages_per_file: int, output_dir: str,
                           base_name: str) -> List[str]:
     """Tách file gốc thành nhiều file, mỗi file đúng `pages_per_file` trang,
-    trang lẻ dồn vào file cuối cùng (VD: 10 trang, N=3 → các file 3-3-3-1 trang)."""
+    trang lẻ dồn vào file cuối cùng (VD: 10 trang, N=3 → các file 3-3-3-1 trang).
+
+    Ghi chú: `base_name` giữ trong chữ ký hàm để không đổi kiến trúc đã chốt, nhưng
+    KHÔNG dùng để đặt tên file nữa — tên file kết quả luôn theo mẫu PDF_Split_<STT>
+    (xem _extract_pages_and_save)."""
     if pages_per_file < 1:
         raise ValueError("pages_per_file phải >= 1")
 
@@ -199,17 +206,25 @@ def split_by_fixed_count(path: str, pages_per_file: int, output_dir: str,
     with PDFDocument(path) as doc:
         total = doc.page_count
         start = 0
+        sequence_number = 1
         while start < total:
             end = min(start + pages_per_file, total) - 1
-            output_paths.append(_extract_pages_and_save(doc.raw, start, end, output_dir, base_name))
+            output_paths.append(
+                _extract_pages_and_save(doc.raw, start, end, output_dir, sequence_number)
+            )
             start = end + 1
+            sequence_number += 1
     return output_paths
 
 
 def split_by_flags(path: str, flag_positions: List[int], output_dir: str,
                     base_name: str) -> List[str]:
     """Tách file theo danh sách vị trí đặt cờ. flag_positions là index trang (0-based)
-    ngay trước mỗi điểm ngắt — VD file 10 trang, đặt cờ giữa trang 3 và trang 4 → giá trị 3."""
+    ngay trước mỗi điểm ngắt — VD file 10 trang, đặt cờ giữa trang 3 và trang 4 → giá trị 3.
+
+    Ghi chú: `base_name` giữ trong chữ ký hàm để không đổi kiến trúc đã chốt, nhưng
+    KHÔNG dùng để đặt tên file nữa — tên file kết quả luôn theo mẫu PDF_Split_<STT>
+    (xem _extract_pages_and_save)."""
     if not flag_positions:
         raise ValueError("Cần ít nhất 1 cờ để tách theo chế độ này")
 
@@ -228,8 +243,8 @@ def split_by_flags(path: str, flag_positions: List[int], output_dir: str,
         segments.append((start, total - 1))
 
         output_paths = [
-            _extract_pages_and_save(doc.raw, seg_start, seg_end, output_dir, base_name)
-            for seg_start, seg_end in segments
+            _extract_pages_and_save(doc.raw, seg_start, seg_end, output_dir, sequence_number)
+            for sequence_number, (seg_start, seg_end) in enumerate(segments, start=1)
         ]
     return output_paths
 

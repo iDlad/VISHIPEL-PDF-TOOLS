@@ -14,8 +14,8 @@ import os
 from typing import Dict, List, Optional
 
 import qtawesome as qta
-from PySide6.QtCore import Qt, Signal, QSize, QThread
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPixmap
+from PySide6.QtCore import Qt, Signal, QSize, QThread, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPixmap, QDesktopServices
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QFileDialog,
     QMessageBox,
+    QStackedWidget,
 )
 
 from src.ui.vishipel_theme import (
@@ -467,7 +468,6 @@ class SplitFeatureWidget(QWidget):
         self.thumb_grid.setHorizontalSpacing(22)
         self.thumb_grid.setVerticalSpacing(22)
         self.preview_scroll.setWidget(grid_container)
-        a3_box_layout.addWidget(self.preview_scroll, stretch=1)
 
         # Nhãn trạng thái rỗng — hiển thị khi chưa chọn file nào
         self.empty_state_label = QLabel("Chưa có file nào được chọn.\nVui lòng chọn file PDF để bắt đầu.")
@@ -475,7 +475,14 @@ class SplitFeatureWidget(QWidget):
         self.empty_state_label.setStyleSheet(
             f"color: {COLOR_TEXT_SECONDARY}; font-size: 13px; background: transparent; border: none;"
         )
-        a3_box_layout.addWidget(self.empty_state_label)
+
+        # QStackedWidget thay vì setVisible() qua lại: 2 trang (rỗng / lưới thumbnail)
+        # luôn chiếm đúng 1 vùng kích thước cố định ngay dưới header — nhờ đó header
+        # "File được chọn" không bao giờ bị đẩy lệch vị trí khi chuyển trạng thái.
+        self.a3_content_stack = QStackedWidget()
+        self.a3_content_stack.addWidget(self.empty_state_label)
+        self.a3_content_stack.addWidget(self.preview_scroll)
+        a3_box_layout.addWidget(self.a3_content_stack, stretch=1)
 
         column_a.addWidget(a3_container, stretch=1)
 
@@ -715,8 +722,8 @@ class SplitFeatureWidget(QWidget):
     # ------------------------------------------------------------------
     def _update_empty_state(self) -> None:
         has_file = self._selected_file_path is not None
-        self.empty_state_label.setVisible(not has_file)
-        self.preview_scroll.setVisible(has_file)
+        target = self.preview_scroll if has_file else self.empty_state_label
+        self.a3_content_stack.setCurrentWidget(target)
 
     # ------------------------------------------------------------------
     # Dựng / dọn lưới thumbnail (Cột A) + dải preview (Cột B) theo file thật
@@ -900,8 +907,9 @@ class SplitFeatureWidget(QWidget):
     @staticmethod
     def _compute_fixed_segments(total: int, pages_per_file: int) -> List[tuple]:
         """Dự đoán các đoạn (start, end) — PHẢI khớp logic split_by_fixed_count trong
-        pdf_core.py. Chỉ dùng để đoán trước tên file, kiểm tra trùng tên trước khi ghi;
-        việc tách file thật luôn do pdf_core thực hiện."""
+        pdf_core.py. Dùng để: (1) biết trước sẽ có bao nhiêu file kết quả (từ đó suy ra
+        danh sách tên PDF_Split_01, 02... để kiểm tra trùng tên trước khi ghi), và
+        (2) validate dữ liệu phía UI. Việc tách file thật luôn do pdf_core thực hiện."""
         segments = []
         start = 0
         while start < total:
@@ -921,6 +929,61 @@ class SplitFeatureWidget(QWidget):
             start = b + 1
         segments.append((start, total - 1))
         return segments
+
+    def _confirm_overwrite(self, duplicate_count: int) -> bool:
+        """Hộp thoại xác nhận ghi đè khi phát hiện trùng tên file — style tường minh,
+        không phụ thuộc theme toàn app (tránh bị chữ trắng-trên-trắng do QSS toàn cục)."""
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Warning)
+        msg_box.setWindowTitle("Trùng tên file")
+        msg_box.setText(
+            f"Đã có {duplicate_count} file trùng tên trong thư mục đã chọn.\n"
+            "Bạn có muốn ghi đè tất cả không?"
+        )
+        msg_box.setStyleSheet(
+            f"""
+            QMessageBox {{
+                background-color: white;
+            }}
+            QMessageBox QLabel {{
+                color: {COLOR_TEXT_PRIMARY};
+                font-size: 13px;
+                background: transparent;
+            }}
+            QPushButton {{
+                background-color: white;
+                color: {COLOR_TEXT_PRIMARY};
+                border: 1.5px solid {COLOR_BORDER_STRONG};
+                border-radius: {CORNER_RADIUS}px;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 6px 16px;
+                min-width: 90px;
+            }}
+            QPushButton:hover {{
+                background-color: #F3F4F6;
+            }}
+            """
+        )
+        btn_overwrite = msg_box.addButton("Ghi đè tất cả", QMessageBox.AcceptRole)
+        btn_overwrite.setStyleSheet(
+            f"""
+            QPushButton {{
+                background-color: {COLOR_ACCENT};
+                color: white;
+                border: none;
+                border-radius: {CORNER_RADIUS}px;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 6px 16px;
+                min-width: 90px;
+            }}
+            QPushButton:hover {{ background-color: #E28104; }}
+            """
+        )
+        msg_box.addButton("Hủy", QMessageBox.RejectRole)
+        msg_box.exec()
+        return msg_box.clickedButton() == btn_overwrite
 
     def _on_split_clicked(self) -> None:
         if not self._selected_file_path:
@@ -951,20 +1014,12 @@ class SplitFeatureWidget(QWidget):
         if not output_dir:
             return  # người dùng hủy chọn thư mục
 
-        predicted_names = [f"{base_name}_p{s + 1}-{e + 1}.pdf" for s, e in segments]
+        # Tên file kết quả theo quy ước đã chốt: PDF_Split_01.pdf, PDF_Split_02.pdf...
+        # (đánh số theo đúng thứ tự file sẽ được tạo ra — xem pdf_core._extract_pages_and_save)
+        predicted_names = [f"PDF_Split_{i:02d}.pdf" for i in range(1, len(segments) + 1)]
         duplicates = [n for n in predicted_names if os.path.exists(os.path.join(output_dir, n))]
         if duplicates:
-            msg_box = QMessageBox(self)
-            msg_box.setIcon(QMessageBox.Warning)
-            msg_box.setWindowTitle("Trùng tên file")
-            msg_box.setText(
-                f"Đã có {len(duplicates)} file trùng tên trong thư mục đã chọn.\n"
-                "Bạn có muốn ghi đè tất cả không?"
-            )
-            btn_overwrite = msg_box.addButton("Ghi đè tất cả", QMessageBox.AcceptRole)
-            msg_box.addButton("Hủy", QMessageBox.RejectRole)
-            msg_box.exec()
-            if msg_box.clickedButton() != btn_overwrite:
+            if not self._confirm_overwrite(len(duplicates)):
                 return
 
         try:
@@ -1004,6 +1059,9 @@ class SplitFeatureWidget(QWidget):
             f"tại '{output_dir}'"
         )
         self._show_success(f"Đã tách thành công {len(output_paths)} file, lưu tại: {output_dir}")
+
+        # Tự động mở thư mục lưu kết quả cho người dùng xem ngay
+        QDesktopServices.openUrl(QUrl.fromLocalFile(output_dir))
 
     # ------------------------------------------------------------------
     def _show_success(self, message: str) -> None:

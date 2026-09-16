@@ -25,7 +25,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Vishipel PDF Tools")
-        self.resize(1300, 800)
+        self.resize(1400, 800)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)

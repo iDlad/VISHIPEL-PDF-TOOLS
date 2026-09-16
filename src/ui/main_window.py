@@ -13,9 +13,12 @@ from src.ui.sidebar import Sidebar, FEATURES
 from src.ui.placeholder_widget import PlaceholderFeatureWidget
 from src.ui.welcome_screen import WelcomeScreen
 from src.ui.vishipel_theme import COLOR_CONTENT_BG
+
+from src.ui.animation_helper import SlidingStackedWidget  
+
 from src.ui.tools.split_widget import SplitFeatureWidget
 from src.ui.tools.merge_widget import MergeFeatureWidget
-from src.ui.animation_helper import SlidingStackedWidget  
+from src.ui.tools.edit_widget import EditFeatureWidget
 
 
 class MainWindow(QMainWindow):
@@ -54,6 +57,8 @@ class MainWindow(QMainWindow):
                 page = SplitFeatureWidget()
             elif key == "merge":
                 page = MergeFeatureWidget()
+            elif key == "edit":
+                page = EditFeatureWidget()
             else:
                 page = PlaceholderFeatureWidget(label)
             index = self.content_stack.addWidget(page)

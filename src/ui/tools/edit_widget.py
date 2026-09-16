@@ -52,7 +52,6 @@ from src.ui.vishipel_theme import (
 _MOCK_PAGE_COUNT = 9
 _GRID_COLUMNS = 3
 _THUMB_SIZE = 128
-_FLAG_BAR_WIDTH = 6
 
 _PREVIEW_PAGE_WIDTH = 340
 _PREVIEW_PAGE_HEIGHT = 460
@@ -109,8 +108,8 @@ _CONTEXT_MENU_QSS = f"""
 
 
 # ----------------------------------------------------------------------
-# A3 — 1 ô trong lưới thumbnail: thumbnail giấy + vạch cờ đỏ bên phải
-# + menu chuột phải Xoay trái/phải (KHÁC Split: Split không có context menu).
+# A3 — 1 ô trong lưới thumbnail: thumbnail giấy + trạng thái đánh dấu xóa.
+# Khi chế độ "Xóa" bật, chuột phải sẽ toggle đánh dấu xóa thay vì mở menu xoay.
 # ----------------------------------------------------------------------
 class _EditPageThumbnail(QWidget):
     clicked = Signal(int)
@@ -120,7 +119,8 @@ class _EditPageThumbnail(QWidget):
         super().__init__(parent)
         self.page_number = page_number
         self.is_selected = False
-        self.is_flagged = False  # đang được đánh dấu để xóa (khi bật chế độ "Xóa")
+        self.is_flagged = False  # đang được đánh dấu để xóa
+        self.delete_mode = False
         # TODO Giai đoạn 2/3: rotation hiện chỉ là badge hiển thị tạm; khi có
         # render_page_thumbnail() thật từ pdf_core.py, thay bằng xoay ảnh PNG thật.
         self.rotation = 0
@@ -157,27 +157,31 @@ class _EditPageThumbnail(QWidget):
 
         row_layout.addWidget(self.card)
 
-        self.flag_bar = QFrame()
-        self.flag_bar.setFixedWidth(_FLAG_BAR_WIDTH)
-        self.flag_bar.setFixedHeight(_THUMB_SIZE)
-        self._apply_flag_style()
-        row_layout.addWidget(self.flag_bar)
 
     def _apply_card_style(self) -> None:
-        if self.is_selected:
+        # Trạng thái đánh dấu xóa luôn được ưu tiên hơn trạng thái selected.
+        if self.is_flagged:
+            border = f"2px solid {COLOR_ERROR}"
+            background = "#FDECEC"
+        elif self.is_selected:
             border = f"2px solid {COLOR_ACCENT}"
             background = COLOR_ACCENT_LIGHT
         else:
             border = f"1px solid {COLOR_BORDER}"
             background = "white"
         self.card.setStyleSheet(
-            f"QFrame {{ background-color: {background}; border: {border}; "
-            f"border-radius: {CORNER_RADIUS}px; }}"
+            f"""
+            QFrame {{
+                background-color: {background};
+                border: {border};
+                border-radius: {CORNER_RADIUS}px;
+            }}
+            QFrame:hover {{
+                border: 2px solid {COLOR_ACCENT};
+                background-color: {COLOR_ACCENT_LIGHT};
+            }}
+            """
         )
-
-    def _apply_flag_style(self) -> None:
-        color = COLOR_ERROR if self.is_flagged else "transparent"
-        self.flag_bar.setStyleSheet(f"background-color: {color}; border-radius: 2px;")
 
     def set_selected(self, selected: bool) -> None:
         self.is_selected = selected
@@ -185,7 +189,13 @@ class _EditPageThumbnail(QWidget):
 
     def set_flagged(self, flagged: bool) -> None:
         self.is_flagged = flagged
-        self._apply_flag_style()
+        self._apply_card_style()
+
+    def reset_flag(self) -> None:
+        self.set_flagged(False)
+
+    def set_delete_mode(self, enabled: bool) -> None:
+        self.delete_mode = enabled
 
     def reset_flag(self) -> None:
         self.set_flagged(False)
@@ -205,6 +215,13 @@ class _EditPageThumbnail(QWidget):
             self.clicked.emit(self.page_number)
 
     def contextMenuEvent(self, event) -> None:
+        if self.delete_mode:
+            # Chế độ Xóa: chuột phải toggle đánh dấu trực tiếp, không mở menu.
+            self.set_flagged(not self.is_flagged)
+            event.accept()
+            return
+
+        # Chế độ bình thường: giữ nguyên menu xoay trái/phải.
         menu = QMenu(self)
         menu.setStyleSheet(_CONTEXT_MENU_QSS)
         rotate_left_action = menu.addAction(
@@ -353,7 +370,7 @@ class _DropZone(QFrame):
 # Widget chính
 # ----------------------------------------------------------------------
 class EditFeatureWidget(QWidget):
-    """Giao diện tính năng Edit File — GIAI ĐOẠN BỐ CỤC (UI THUẦN, chưa nối logic thật)."""
+    """Giao diện tính năng Edit File — UI/mock, chưa nối xử lý PDF thật."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -434,37 +451,63 @@ class EditFeatureWidget(QWidget):
 
         column_a.addWidget(a3_container, stretch=1)
 
-        # --- Hàng dưới cùng: Nhãn "Xóa" + checkbox → Undo → Clear → Lưu File ---
-        # (KHÁC Split: bỏ hẳn "Nhập số trang" + spin box + "Tùy chỉnh")
+        # --- Hàng dưới cùng: 4 nhóm chia đều theo toàn bộ chiều ngang ---
+        # [Xóa + checkbox] — [Undo] — [Clear] — [Lưu File]
         bottom_row = QHBoxLayout()
-        bottom_row.setSpacing(10)
+        bottom_row.setSpacing(0)
         bottom_row.setContentsMargins(0, 0, 0, 0)
 
+        # Nhóm 1: Xóa + checkbox (Đồng bộ style khung như Undo/Clear)
+        delete_group = QWidget()
+        delete_group.setFixedHeight(CONTROL_HEIGHT)
+        delete_group.setStyleSheet(
+            f"""
+            QWidget {{
+                background-color: white;
+                border: 1.5px solid {COLOR_BORDER_STRONG};
+                border-radius: {CORNER_RADIUS}px;
+            }}
+            """
+        )
+        delete_group_layout = QHBoxLayout(delete_group)
+        delete_group_layout.setContentsMargins(12, 0, 12, 0)
+        delete_group_layout.setSpacing(6)
+        delete_group_layout.setAlignment(Qt.AlignCenter)
+
+        # Icon thùng rác
+        delete_icon = QLabel()
+        delete_icon.setPixmap(
+            qta.icon("mdi6.trash-can-outline", color=COLOR_TEXT_PRIMARY).pixmap(16, 16)
+        )
+        delete_icon.setStyleSheet("background: transparent; border: none;")
+        delete_group_layout.addWidget(delete_icon)
+
+        # Nhãn "Xóa"
         delete_label = QLabel("Xóa")
-        delete_label.setFixedHeight(CONTROL_HEIGHT)
         delete_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         delete_label.setStyleSheet(
             f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; font-weight: 700; "
             "background: transparent; border: none;"
         )
-        bottom_row.addWidget(delete_label)
+        delete_group_layout.addWidget(delete_label)
 
+        # Checkbox
         self.delete_checkbox = _CheckToggle()
-        checkbox_container = QWidget()
-        checkbox_container.setFixedHeight(CONTROL_HEIGHT)
-        checkbox_layout = QHBoxLayout(checkbox_container)
-        checkbox_layout.setContentsMargins(0, 0, 0, 0)
-        checkbox_layout.setAlignment(Qt.AlignCenter)
-        checkbox_layout.addWidget(self.delete_checkbox)
-        # TODO: hành vi chi tiết của checkbox "Xóa" (bật/tắt chế độ đánh dấu trang trên
-        # thumbnail) chờ đại ca mô tả thêm — hiện đang tạm nối giống cơ chế đặt cờ của Split.
-        self.delete_checkbox.toggled.connect(self._on_delete_mode_toggled)
-        bottom_row.addWidget(checkbox_container)
+        delete_group_layout.addWidget(self.delete_checkbox)
 
-        bottom_row.addStretch()
+        self.delete_checkbox.toggled.connect(self._on_delete_mode_toggled)
+        bottom_row.addWidget(delete_group, stretch=1)
+
+        # Nhóm 2: Undo
+        undo_group = QWidget()
+        undo_group_layout = QHBoxLayout(undo_group)
+        undo_group_layout.setContentsMargins(0, 0, 0, 0)
+        undo_group_layout.setAlignment(Qt.AlignCenter)
 
         self.undo_button = QPushButton(" Undo")
-        self.undo_button.setIcon(qta.icon("mdi6.undo-variant", color=COLOR_TEXT_PRIMARY))
+        self.undo_button.setIcon(
+            qta.icon("mdi6.undo-variant", color=COLOR_TEXT_PRIMARY)
+        )
         self.undo_button.setCursor(Qt.PointingHandCursor)
         self.undo_button.setFixedHeight(CONTROL_HEIGHT)
         self.undo_button.setMinimumWidth(100)
@@ -483,11 +526,20 @@ class EditFeatureWidget(QWidget):
             QPushButton:pressed {{ background-color: #E5E7EB; }}
             """
         )
-        # TODO Giai đoạn 2/3: nối với undo_manager.py — hiện là mock.
         self.undo_button.clicked.connect(self._on_undo_clicked)
-        bottom_row.addWidget(self.undo_button)
+        undo_group_layout.addWidget(self.undo_button)
+        bottom_row.addWidget(undo_group, stretch=1)
+
+        # Nhóm 3: Clear
+        clear_group = QWidget()
+        clear_group_layout = QHBoxLayout(clear_group)
+        clear_group_layout.setContentsMargins(0, 0, 0, 0)
+        clear_group_layout.setAlignment(Qt.AlignCenter)
 
         self.clear_button = QPushButton("Clear")
+        self.clear_button.setIcon(
+            qta.icon("mdi6.trash-can-outline", color=COLOR_TEXT_PRIMARY)
+        )
         self.clear_button.setCursor(Qt.PointingHandCursor)
         self.clear_button.setFixedHeight(CONTROL_HEIGHT)
         self.clear_button.setMinimumWidth(85)
@@ -507,7 +559,14 @@ class EditFeatureWidget(QWidget):
             """
         )
         self.clear_button.clicked.connect(self._on_clear_clicked)
-        bottom_row.addWidget(self.clear_button)
+        clear_group_layout.addWidget(self.clear_button)
+        bottom_row.addWidget(clear_group, stretch=1)
+
+        # Nhóm 4: Lưu File
+        save_group = QWidget()
+        save_group_layout = QHBoxLayout(save_group)
+        save_group_layout.setContentsMargins(0, 0, 0, 0)
+        save_group_layout.setAlignment(Qt.AlignCenter)
 
         self.save_button = QPushButton(" Lưu File")
         self.save_button.setIcon(qta.icon("mdi6.content-save-outline", color="white"))
@@ -530,7 +589,8 @@ class EditFeatureWidget(QWidget):
             """
         )
         self.save_button.clicked.connect(self._on_save_clicked)
-        bottom_row.addWidget(self.save_button)
+        save_group_layout.addWidget(self.save_button)
+        bottom_row.addWidget(save_group, stretch=1)
 
         column_a.addLayout(bottom_row)
 
@@ -661,17 +721,15 @@ class EditFeatureWidget(QWidget):
         self._hide_result()
 
     def _on_delete_mode_toggled(self, checked: bool) -> None:
-        # TODO: chờ đại ca mô tả thêm hành vi chính xác của chế độ "Xóa".
-        # Tạm thời: khi tắt chế độ, bỏ hết đánh dấu đang có (giống cơ chế của Split).
-        if not checked:
-            for thumb in self._thumbnails:
-                thumb.reset_flag()
+        # Chỉ chuyển trạng thái tương tác. Các trang đã đánh dấu phải được giữ nguyên
+        # để người dùng có thể tắt Xóa và tiếp tục xoay trang trước khi lưu.
+        for thumb in self._thumbnails:
+            thumb.set_delete_mode(checked)
 
     def _on_thumbnail_clicked(self, page_number: int) -> None:
+        # Chuột trái chỉ dùng để chọn trang và xem preview ở cột B.
+        # Không bao giờ thay đổi trạng thái đánh dấu xóa.
         self._select_page(page_number)
-        if self.delete_checkbox.isChecked():
-            thumb = self._thumbnails[page_number - 1]
-            thumb.set_flagged(not thumb.is_flagged)
 
     def _on_rotate_requested(self, page_number: int, direction: str) -> None:
         # TODO Giai đoạn 2/3: gọi pdf_core.rotate_page() + undo_manager.register() thật.

@@ -591,6 +591,7 @@ class SplitFeatureWidget(QWidget):
         bottom_row.addStretch()
 
         self.clear_button = QPushButton("Clear")
+        self.clear_button.setIcon(qta.icon("mdi6.trash-can-outline", color=COLOR_TEXT_PRIMARY))
         self.clear_button.setCursor(Qt.PointingHandCursor)
         self.clear_button.setFixedHeight(CONTROL_HEIGHT)
         self.clear_button.setMinimumWidth(85)

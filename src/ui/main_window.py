@@ -19,6 +19,8 @@ from src.ui.animation_helper import SlidingStackedWidget
 from src.ui.tools.split_widget import SplitFeatureWidget
 from src.ui.tools.merge_widget import MergeFeatureWidget
 from src.ui.tools.edit_widget import EditFeatureWidget
+from src.ui.tools.insert_widget import InsertFeatureWidget
+
 
 
 class MainWindow(QMainWindow):
@@ -59,6 +61,8 @@ class MainWindow(QMainWindow):
                 page = MergeFeatureWidget()
             elif key == "edit":
                 page = EditFeatureWidget()
+            elif key == "insert":
+                page = InsertFeatureWidget()
             else:
                 page = PlaceholderFeatureWidget(label)
             index = self.content_stack.addWidget(page)

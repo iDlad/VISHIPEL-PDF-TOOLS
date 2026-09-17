@@ -3,7 +3,11 @@ Giao diện tính năng Tách File (Split) — ĐÃ NỐI LOGIC THẬT với pdf
 
 Bố cục 2 cột (A ~55% - B ~45%):
 - Cột A: A1 khối chọn file, A3 khung chứa tiêu đề + lưới thumbnail (render thật).
+  Mỗi thumbnail có badge số trang cố định góc trên-trái, hiển thị mọi lúc (kể cả
+  trước/sau khi ảnh thật render xong).
 - Cột B: Khung chứa tiêu đề + preview cuộn liên tục nhiều trang (render thật).
+  Hỗ trợ Zoom In/Out (mỗi lần ±15%, giới hạn 50%-200%, mặc định 100% = vừa khít
+  khung hiển thị) và kéo bằng chuột trái (pan) khi nội dung vượt khung.
 
 Render thumbnail/preview chạy nền qua QThread (_PageRenderWorker) để không đơ UI
 khi file nhiều trang — cập nhật ảnh từng trang một ngay khi render xong (progressive).
@@ -64,11 +68,28 @@ _FLAG_BAR_WIDTH = 6
 
 # Kích thước render thực tế lớn hơn kích thước hiển thị để ảnh nét, đặc biệt trên
 # màn hình có DPI cao — sau đó co lại vừa khung hiển thị (KeepAspectRatio).
+# _PREVIEW_RENDER_WIDTH tăng lên 1000 (từ 700) để ảnh không vỡ nét khi zoom tới 200%.
 _THUMB_RENDER_WIDTH = 220
-_PREVIEW_RENDER_WIDTH = 700
+_PREVIEW_RENDER_WIDTH = 1000
 
-_PREVIEW_PAGE_WIDTH = 340
+# Chỉ còn dùng làm tỉ lệ khung hình DỰ PHÒNG khi không đọc được kích thước trang thật
+# (info.width / info.height bằng 0) — chiều rộng thực tế của từng trang preview giờ
+# co giãn theo khung Cột B + hệ số zoom, xem _compute_preview_width().
+_PREVIEW_PAGE_WIDTH_FALLBACK = 340
 _PREVIEW_PAGE_HEIGHT_DEFAULT = 460
+
+# Zoom Cột B: mỗi lần bấm Zoom In/Out ±15%, giới hạn 50%-200%.
+# Mặc định 100% = chiều rộng "vừa khít khung hiển thị" hiện tại (không phải số px cố định)
+# — nhờ vậy trang preview không còn bị bé cố định như trước, tự to theo cửa sổ.
+_ZOOM_MIN = 0.5
+_ZOOM_MAX = 2.0
+_ZOOM_STEP = 0.15
+_ZOOM_DEFAULT = 1.0
+
+# Lề trái/phải giữa nội dung preview và biên khung Cột B — dùng để tính chiều rộng
+# "vừa khít khung" và để set contents margins của preview_layout cho đồng nhất.
+_PREVIEW_SIDE_MARGIN = 12
+_PREVIEW_MIN_PAGE_WIDTH = 220
 
 _CHECKBOX_SIZE = 22
 _CHECKBOX_RADIUS = round(CORNER_RADIUS * _CHECKBOX_SIZE / CONTROL_HEIGHT)
@@ -94,6 +115,29 @@ def _spin_arrow_style(is_top: bool) -> str:
         }}
         QToolButton:hover {{ background-color: {COLOR_ACCENT_LIGHT}; }}
         QToolButton:pressed {{ background-color: {COLOR_ACCENT}; }}
+        """
+
+
+def _zoom_button_style() -> str:
+    """Style cho 2 nút Zoom In/Out ở header Cột B — vuông bo góc nhẹ, tự mờ khi
+    chạm giới hạn min/max (QToolButton:disabled)."""
+    return f"""
+        QToolButton {{
+            background-color: white;
+            border: 1.5px solid {COLOR_BORDER_STRONG};
+            border-radius: 6px;
+        }}
+        QToolButton:hover:enabled {{
+            background-color: {COLOR_ACCENT_LIGHT};
+            border-color: {COLOR_ACCENT};
+        }}
+        QToolButton:pressed:enabled {{
+            background-color: {COLOR_ACCENT};
+        }}
+        QToolButton:disabled {{
+            background-color: #F3F4F6;
+            border-color: {COLOR_BORDER};
+        }}
         """
 
 
@@ -166,7 +210,7 @@ class _PageRenderWorker(QThread):
 
 # ----------------------------------------------------------------------
 # A3 — 1 ô trong lưới thumbnail: số trang (lúc đang tải) → ảnh thật (khi render xong)
-#      + vạch cờ đỏ bên phải
+#      + vạch cờ đỏ bên phải + badge số trang cố định góc trên-trái
 # ----------------------------------------------------------------------
 class _PageThumbnail(QWidget):
     clicked = Signal(int)
@@ -207,6 +251,19 @@ class _PageThumbnail(QWidget):
 
         row_layout.addWidget(self.card)
 
+        # Badge số trang — luôn hiển thị cố định góc trên-trái của card, không phụ
+        # thuộc trạng thái ảnh (khắc phục việc mất số trang sau khi ảnh render xong).
+        # Đặt geometry tuyệt đối (không qua layout) vì self.card đã fix size 128x128.
+        self.badge_label = QLabel(str(page_number), self.card)
+        self.badge_label.setAlignment(Qt.AlignCenter)
+        self.badge_label.setStyleSheet(
+            "background-color: rgba(15, 23, 42, 0.78); color: white; "
+            "font-size: 11px; font-weight: 700; border-radius: 8px; padding: 2px 6px;"
+        )
+        self.badge_label.adjustSize()
+        self.badge_label.move(6, 6)
+        self.badge_label.raise_()
+
         self.flag_bar = QFrame()
         self.flag_bar.setFixedWidth(_FLAG_BAR_WIDTH)
         self.flag_bar.setFixedHeight(_THUMB_SIZE)
@@ -241,7 +298,8 @@ class _PageThumbnail(QWidget):
         self.set_flagged(False)
 
     def set_thumbnail_image(self, png_bytes: bytes) -> None:
-        """Gắn ảnh thumbnail thật đã render — thay thế số trang đang hiển thị tạm."""
+        """Gắn ảnh thumbnail thật đã render — thay thế số trang đang hiển thị tạm.
+        Badge số trang góc trên-trái giữ nguyên, không bị ảnh hưởng."""
         pixmap = QPixmap()
         if not pixmap.loadFromData(png_bytes):
             return
@@ -251,6 +309,7 @@ class _PageThumbnail(QWidget):
         self.image_label.setPixmap(scaled)
         self.image_label.show()
         self.number_label.hide()
+        self.badge_label.raise_()
 
     def mousePressEvent(self, event) -> None:
         super().mousePressEvent(event)
@@ -292,6 +351,62 @@ class _CheckToggle(QToolButton):
                 }}
                 """
             )
+
+
+# ----------------------------------------------------------------------
+# Cột B — QScrollArea hỗ trợ kéo bằng chuột trái (pan) khi nội dung vượt khung,
+# và phát tín hiệu khi kích thước viewport đổi để widget cha tính lại chiều rộng
+# trang preview cho vừa khung (responsive fit-width).
+# ----------------------------------------------------------------------
+class _PannablePreviewScrollArea(QScrollArea):
+    viewport_resized = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._panning = False
+        self._pan_start_pos = None
+        self._pan_start_h = 0
+        self._pan_start_v = 0
+        self.viewport().setCursor(Qt.OpenHandCursor)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.viewport_resized.emit()
+
+    def _event_pos(self, event):
+        # Qt6/PySide6: dùng position() (QPointF) thay vì pos() đã deprecated.
+        if hasattr(event, "position"):
+            return event.position().toPoint()
+        return event.pos()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._panning = True
+            self._pan_start_pos = self._event_pos(event)
+            self._pan_start_h = self.horizontalScrollBar().value()
+            self._pan_start_v = self.verticalScrollBar().value()
+            self.viewport().setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._panning and self._pan_start_pos is not None:
+            delta = self._event_pos(event) - self._pan_start_pos
+            self.horizontalScrollBar().setValue(self._pan_start_h - delta.x())
+            self.verticalScrollBar().setValue(self._pan_start_v - delta.y())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self._panning:
+            self._panning = False
+            self._pan_start_pos = None
+            self.viewport().setCursor(Qt.OpenHandCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 
 # ----------------------------------------------------------------------
@@ -401,6 +516,12 @@ class SplitFeatureWidget(QWidget):
         self._preview_pages: Dict[int, QFrame] = {}
         self._renderer = PageRenderer()
         self._render_worker: Optional[_PageRenderWorker] = None
+
+        # Cache PNG bytes của từng trang preview (Cột B) để zoom in/out chỉ cần
+        # scale lại ảnh đã có, không phải render lại từ PDF.
+        self._preview_png_cache: Dict[int, bytes] = {}
+        self._zoom_level: float = _ZOOM_DEFAULT
+        self._current_preview_width: Optional[int] = None
 
         root_layout = QHBoxLayout(self)
         root_layout.setContentsMargins(28, 24, 28, 24)
@@ -664,7 +785,7 @@ class SplitFeatureWidget(QWidget):
         preview_box_layout.setContentsMargins(0, 0, 0, 0)
         preview_box_layout.setSpacing(0)
 
-        # Header Tiêu đề Cột B trong khung bao (Icon đen + Text)
+        # Header Tiêu đề Cột B trong khung bao (Icon đen + Text + cụm nút Zoom)
         b_header = QWidget()
         b_header_layout = QHBoxLayout(b_header)
         b_header_layout.setContentsMargins(16, 12, 16, 12)
@@ -681,10 +802,43 @@ class SplitFeatureWidget(QWidget):
             "background: transparent; border: none;"
         )
         b_header_layout.addWidget(self.preview_title_label, stretch=1)
+
+        # Cụm Zoom Out / % / Zoom In — canh phải cùng hàng tiêu đề (title đã chiếm
+        # stretch=1 ở trên nên các widget thêm sau tự động dồn sang phải).
+        self.zoom_out_btn = QToolButton()
+        self.zoom_out_btn.setCursor(Qt.PointingHandCursor)
+        self.zoom_out_btn.setIcon(qta.icon("mdi6.magnify-minus-outline", color=COLOR_TEXT_PRIMARY))
+        self.zoom_out_btn.setIconSize(QSize(16, 16))
+        self.zoom_out_btn.setFixedSize(26, 26)
+        self.zoom_out_btn.setStyleSheet(_zoom_button_style())
+        self.zoom_out_btn.setToolTip("Thu nhỏ (-15%)")
+        self.zoom_out_btn.clicked.connect(self._on_zoom_out_clicked)
+        b_header_layout.addWidget(self.zoom_out_btn)
+
+        self.zoom_percent_label = QLabel(f"{round(_ZOOM_DEFAULT * 100)}%")
+        self.zoom_percent_label.setAlignment(Qt.AlignCenter)
+        self.zoom_percent_label.setFixedWidth(42)
+        self.zoom_percent_label.setStyleSheet(
+            f"color: {COLOR_TEXT_SECONDARY}; font-size: 12px; font-weight: 600; "
+            "background: transparent; border: none;"
+        )
+        b_header_layout.addWidget(self.zoom_percent_label)
+
+        self.zoom_in_btn = QToolButton()
+        self.zoom_in_btn.setCursor(Qt.PointingHandCursor)
+        self.zoom_in_btn.setIcon(qta.icon("mdi6.magnify-plus-outline", color=COLOR_TEXT_PRIMARY))
+        self.zoom_in_btn.setIconSize(QSize(16, 16))
+        self.zoom_in_btn.setFixedSize(26, 26)
+        self.zoom_in_btn.setStyleSheet(_zoom_button_style())
+        self.zoom_in_btn.setToolTip("Phóng to (+15%)")
+        self.zoom_in_btn.clicked.connect(self._on_zoom_in_clicked)
+        b_header_layout.addWidget(self.zoom_in_btn)
+
         preview_box_layout.addWidget(b_header)
 
-        # Khung Preview cuộn dọc
-        self.preview_scroll_b = QScrollArea()
+        # Khung Preview cuộn dọc — dùng _PannablePreviewScrollArea để hỗ trợ kéo
+        # bằng chuột trái (pan) và báo khi kích thước khung đổi (responsive fit-width).
+        self.preview_scroll_b = _PannablePreviewScrollArea()
         self.preview_scroll_b.setWidgetResizable(True)
         self.preview_scroll_b.setStyleSheet(
             f"""
@@ -695,11 +849,14 @@ class SplitFeatureWidget(QWidget):
             {_SCROLLBAR_QSS}
             """
         )
+        self.preview_scroll_b.viewport_resized.connect(self._on_preview_viewport_resized)
 
         preview_container = QWidget()
         preview_container.setStyleSheet("background: transparent;")
         self.preview_layout = QVBoxLayout(preview_container)
-        self.preview_layout.setContentsMargins(16, 16, 16, 16)
+        self.preview_layout.setContentsMargins(
+            _PREVIEW_SIDE_MARGIN, 12, _PREVIEW_SIDE_MARGIN, 12
+        )
         self.preview_layout.setSpacing(16)
         self.preview_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self.preview_scroll_b.setWidget(preview_container)
@@ -717,6 +874,8 @@ class SplitFeatureWidget(QWidget):
         root_layout.addWidget(column_b_widget, stretch=45)
 
         self._update_empty_state()
+        self._update_zoom_buttons_state()
+        self._update_zoom_percent_label()
 
     # ------------------------------------------------------------------
     # Trạng thái rỗng (chưa chọn file)
@@ -739,6 +898,8 @@ class SplitFeatureWidget(QWidget):
             self.preview_layout.removeWidget(frame)
             frame.deleteLater()
         self._preview_pages.clear()
+        self._preview_png_cache.clear()
+        self._current_preview_width = None
 
     def _build_real_grid(self, page_infos: List[PageInfo]) -> None:
         for i in range(len(page_infos)):
@@ -749,13 +910,15 @@ class SplitFeatureWidget(QWidget):
             self.thumb_grid.addWidget(thumb, row, col)
             self._thumbnails.append(thumb)
 
-    def _create_preview_frame(self, page_number: int, info: PageInfo) -> QFrame:
-        height = _PREVIEW_PAGE_HEIGHT_DEFAULT
+    def _create_preview_frame(self, page_number: int, info: PageInfo, width: int) -> QFrame:
         if info.width and info.height:
-            height = round(_PREVIEW_PAGE_WIDTH * (info.height / info.width))
+            aspect_ratio = info.height / info.width
+        else:
+            aspect_ratio = _PREVIEW_PAGE_HEIGHT_DEFAULT / _PREVIEW_PAGE_WIDTH_FALLBACK
+        height = round(width * aspect_ratio)
 
         frame = QFrame()
-        frame.setFixedSize(_PREVIEW_PAGE_WIDTH, height)
+        frame.setFixedSize(width, height)
         frame.setStyleSheet(
             f"QFrame {{ background-color: white; border: 1px solid {COLOR_BORDER}; border-radius: 6px; }}"
         )
@@ -777,15 +940,19 @@ class SplitFeatureWidget(QWidget):
         image_label.hide()
         frame_layout.addWidget(image_label)
 
-        # Gắn tham chiếu để cập nhật ảnh sau khi render xong (xem _set_preview_frame_image)
+        # Gắn tham chiếu để cập nhật ảnh + tỉ lệ khung hình khi render xong hoặc khi
+        # zoom thay đổi (xem _set_preview_frame_image, _apply_preview_zoom).
         frame.number_label = number_label
         frame.image_label = image_label
+        frame.aspect_ratio = aspect_ratio
         return frame
 
     def _build_real_preview(self, page_infos: List[PageInfo]) -> None:
+        width = self._compute_preview_width()
+        self._current_preview_width = width
         for i, info in enumerate(page_infos):
             page_number = i + 1
-            frame = self._create_preview_frame(page_number, info)
+            frame = self._create_preview_frame(page_number, info, width)
             self.preview_layout.addWidget(frame, alignment=Qt.AlignHCenter)
             self._preview_pages[page_number] = frame
 
@@ -823,6 +990,7 @@ class SplitFeatureWidget(QWidget):
             self._thumbnails[page_index].set_thumbnail_image(thumb_bytes)
 
         page_number = page_index + 1
+        self._preview_png_cache[page_number] = preview_bytes
         frame = self._preview_pages.get(page_number)
         if frame is not None:
             self._set_preview_frame_image(frame, preview_bytes)
@@ -858,6 +1026,7 @@ class SplitFeatureWidget(QWidget):
         self._build_real_grid(page_infos)
         self._build_real_preview(page_infos)
         self._update_empty_state()
+        self._update_zoom_buttons_state()
 
         filename = os.path.basename(path)
         self.a3_title_label.setText(f'File được chọn: "{filename}"')
@@ -890,6 +1059,9 @@ class SplitFeatureWidget(QWidget):
         self.custom_checkbox.setChecked(False)
         self.pages_per_file_spin.setValue(1)
         self._clear_grid_and_preview()
+        self._zoom_level = _ZOOM_DEFAULT
+        self._update_zoom_buttons_state()
+        self._update_zoom_percent_label()
         self._update_empty_state()
         self.a3_title_label.setText('File được chọn: ""')
         self.preview_title_label.setText('Xem trước: ""')
@@ -901,6 +1073,78 @@ class SplitFeatureWidget(QWidget):
         target = self._preview_pages.get(page_number)
         if target is not None:
             self.preview_scroll_b.ensureWidgetVisible(target, 0, 0)
+
+    # ------------------------------------------------------------------
+    # Zoom + Pan cho khu vực Xem trước (Cột B)
+    # ------------------------------------------------------------------
+    def _fit_base_width(self) -> int:
+        """Chiều rộng 'vừa khít khung' tại mốc zoom 100% — tính theo chiều rộng
+        thật của viewport Cột B hiện tại (co giãn theo cửa sổ), trừ lề 2 bên."""
+        viewport_width = self.preview_scroll_b.viewport().width()
+        usable = viewport_width - (_PREVIEW_SIDE_MARGIN * 2)
+        return max(_PREVIEW_MIN_PAGE_WIDTH, usable)
+
+    def _compute_preview_width(self) -> int:
+        """Chiều rộng trang preview thực tế = chiều rộng 'vừa khít khung' (100%)
+        nhân với hệ số zoom hiện tại."""
+        base_width = self._fit_base_width()
+        return max(_PREVIEW_MIN_PAGE_WIDTH, round(base_width * self._zoom_level))
+
+    def _apply_preview_zoom(self) -> None:
+        """Tính lại chiều rộng trang theo zoom + kích thước khung hiện tại, áp dụng
+        cho toàn bộ trang đang hiển thị — dùng ảnh đã cache, không render lại."""
+        if not self._preview_pages:
+            self._update_zoom_buttons_state()
+            self._update_zoom_percent_label()
+            return
+
+        new_width = self._compute_preview_width()
+        if new_width == self._current_preview_width:
+            self._update_zoom_buttons_state()
+            self._update_zoom_percent_label()
+            return
+        self._current_preview_width = new_width
+
+        for page_number, frame in self._preview_pages.items():
+            aspect_ratio = getattr(frame, "aspect_ratio", None)
+            if not aspect_ratio:
+                aspect_ratio = _PREVIEW_PAGE_HEIGHT_DEFAULT / _PREVIEW_PAGE_WIDTH_FALLBACK
+            new_height = round(new_width * aspect_ratio)
+            frame.setFixedSize(new_width, new_height)
+
+            cached_bytes = self._preview_png_cache.get(page_number)
+            if cached_bytes is not None:
+                self._set_preview_frame_image(frame, cached_bytes)
+
+        self._update_zoom_buttons_state()
+        self._update_zoom_percent_label()
+
+    def _on_zoom_in_clicked(self) -> None:
+        self._set_zoom_level(self._zoom_level + _ZOOM_STEP)
+
+    def _on_zoom_out_clicked(self) -> None:
+        self._set_zoom_level(self._zoom_level - _ZOOM_STEP)
+
+    def _set_zoom_level(self, new_level: float) -> None:
+        clamped = max(_ZOOM_MIN, min(_ZOOM_MAX, round(new_level, 2)))
+        if abs(clamped - self._zoom_level) < 1e-6:
+            return
+        self._zoom_level = clamped
+        self._apply_preview_zoom()
+
+    def _update_zoom_buttons_state(self) -> None:
+        has_pages = bool(self._preview_pages)
+        self.zoom_in_btn.setEnabled(has_pages and self._zoom_level < _ZOOM_MAX - 1e-6)
+        self.zoom_out_btn.setEnabled(has_pages and self._zoom_level > _ZOOM_MIN + 1e-6)
+
+    def _update_zoom_percent_label(self) -> None:
+        self.zoom_percent_label.setText(f"{round(self._zoom_level * 100)}%")
+
+    def _on_preview_viewport_resized(self) -> None:
+        """Cửa sổ/khung Cột B đổi kích thước — tính lại chiều rộng 'vừa khít khung'
+        theo zoom hiện tại (giữ nguyên % zoom, chỉ đổi kích thước tuyệt đối)."""
+        if self._preview_pages:
+            self._apply_preview_zoom()
 
     # ------------------------------------------------------------------
     # Tách file thật

@@ -1,9 +1,21 @@
 """
 Giao diện tính năng Gộp File (Merge) — Đã điều chỉnh theo yêu cầu UI/UX.
+
+Cột B: khung xem trước lớn giờ là 1 khung cuộn liên tục nhiều trang (giống Cột B
+của tính năng Tách file) — cuộn chuột bình thường để xem, kéo chuột trái để pan
+khi đã zoom to hơn khung. Click 1 thumbnail ở dải trái sẽ cuộn khung lớn tới đúng
+trang đó (đồng bộ 1 chiều: click thumbnail → cuộn khung lớn; cuộn tay tự do không
+đồng bộ ngược lại dải thumbnail). Zoom In/Out ±15% (50%-200%) đặt cùng hàng tiêu đề.
+
+Cột A: vạch chỉ vị trí kéo-thả file (sắp xếp danh sách) màu đỏ, có vùng đệm quanh
+tâm mỗi dòng để tránh nhấp nháy khi rê chuột nhẹ quanh điểm giữa.
+
+Khung trang trong Cột B không highlight viền cam khi "đang chọn" — giữ nguyên 1
+kiểu hiển thị, không cần trạng thái hover/current riêng cho nội dung preview.
 """
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import qtawesome as qta
 from PySide6.QtCore import Qt, Signal, QSize, QPoint
@@ -60,10 +72,30 @@ _THUMB_STRIP_WIDTH = 115
 _THUMB_W, _THUMB_H = 72, 94
 _BADGE_SIZE = 18
 _DRAG_THRESHOLD = 8
-# Đường kẻ báo vị trí sẽ chèn file khi kéo-thả (kiểu PowerPoint)
-_DROP_INDICATOR_COLOR = "#FA9005"
+# Đường kẻ báo vị trí sẽ chèn file khi kéo-thả (kiểu PowerPoint) — màu đỏ để tách
+# biệt rõ với màu Accent cam đang dùng cho trạng thái "đang chọn".
+_DROP_INDICATOR_COLOR = COLOR_ERROR
 _DROP_INDICATOR_HEIGHT = 4
 _DROP_INDICATOR_DOT_SIZE = 10
+# Vùng đệm quanh tâm mỗi dòng (tỉ lệ theo chiều cao dòng) — trong vùng này giữ
+# nguyên vị trí vạch đang hiển thị, chỉ đổi khi chuột vượt hẳn ra khỏi vùng đệm,
+# tránh vạch nhấp nháy đổi vị trí liên tục khi rê chuột nhẹ quanh điểm giữa.
+_DROP_DEADZONE_RATIO = 0.20
+
+# Zoom Cột B: mỗi lần bấm Zoom In/Out ±15%, giới hạn 50%-200%.
+# Mặc định 100% = chiều rộng "vừa khít khung hiển thị" hiện tại (đồng bộ với Split).
+_ZOOM_MIN = 0.5
+_ZOOM_MAX = 2.0
+_ZOOM_STEP = 0.15
+_ZOOM_DEFAULT = 1.0
+
+# Lề trái/phải giữa nội dung preview và biên khung Cột B.
+_PREVIEW_SIDE_MARGIN = 12
+_PREVIEW_MIN_PAGE_WIDTH = 220
+# Tỉ lệ khung hình dự phòng cho khung trang placeholder (mock — Merge chưa nối
+# pdf_core thật nên chưa có kích thước trang thực tế).
+_PREVIEW_PAGE_WIDTH_FALLBACK = 340
+_PREVIEW_PAGE_HEIGHT_DEFAULT = 460
 
 _SCROLLBAR_QSS = f"""
     QScrollBar:vertical {{
@@ -97,6 +129,28 @@ def _parse_size_to_mb(size_text: str) -> float:
         return value / 1024 if unit.upper() == "KB" else value
     except (ValueError, AttributeError):
         return 0.0
+
+
+def _zoom_button_style() -> str:
+    """Style cho 2 nút Zoom In/Out ở header Cột B — đồng bộ với split_widget.py."""
+    return f"""
+        QToolButton {{
+            background-color: white;
+            border: 1.5px solid {COLOR_BORDER_STRONG};
+            border-radius: 6px;
+        }}
+        QToolButton:hover:enabled {{
+            background-color: {COLOR_ACCENT_LIGHT};
+            border-color: {COLOR_ACCENT};
+        }}
+        QToolButton:pressed:enabled {{
+            background-color: {COLOR_ACCENT};
+        }}
+        QToolButton:disabled {{
+            background-color: #F3F4F6;
+            border-color: {COLOR_BORDER};
+        }}
+        """
 
 
 # ----------------------------------------------------------------------
@@ -240,9 +294,22 @@ class _DraggableFileList(QListWidget):
             if pos.y() < first_rect.top():
                 return 0
             return self.count()
+
         index = self.row(item)
         rect = self.visualItemRect(item)
-        if pos.y() > rect.center().y():
+        center_y = rect.center().y()
+
+        # Vùng đệm quanh tâm dòng: nếu lần tính trước đã "chốt" 1 trong 2 khả năng
+        # của đúng dòng này (trước dòng = index, hoặc sau dòng = index + 1), và
+        # chuột vẫn còn trong vùng đệm quanh tâm, giữ nguyên kết quả cũ — tránh
+        # vạch nhấp nháy đổi vị trí liên tục khi rê chuột nhẹ quanh điểm giữa.
+        deadzone = max(1, round(rect.height() * _DROP_DEADZONE_RATIO))
+        previous = self._drop_indicator_index
+        if previous is not None and previous in (index, index + 1):
+            if center_y - deadzone <= pos.y() <= center_y + deadzone:
+                return previous
+
+        if pos.y() > center_y:
             index += 1
         return index
 
@@ -455,13 +522,17 @@ class _FileRow(QFrame):
 
         list_widget = self.list_widget
         source_index = self.current_index()
-        list_widget.clear_drop_indicator() if list_widget is not None else None
         viewport_pos = self._to_list_viewport_pos(current_pos)
+        # Tính target_index TRƯỚC khi xoá vạch chỉ thị — để vùng đệm (dead-zone)
+        # dùng đúng giá trị đang hiển thị lúc thả chuột, tránh trường hợp vạch cho
+        # thấy 1 vị trí nhưng lúc thả lại chèn vào vị trí khác do bị reset về None.
         target_index = (
             list_widget.compute_drop_index_from_viewport_pos(viewport_pos)
             if (list_widget is not None and viewport_pos is not None)
             else None
         )
+        if list_widget is not None:
+            list_widget.clear_drop_indicator()
 
         if list_widget is not None and source_index is not None and target_index is not None:
             list_widget.row_drag_dropped.emit(source_index, target_index)
@@ -471,7 +542,7 @@ class _FileRow(QFrame):
 
 
 # ----------------------------------------------------------------------
-# Cột B — Thumbnail nhỏ gọn
+# Cột B — Thumbnail nhỏ gọn (dải trái, dùng làm "mục lục" nhảy nhanh)
 # ----------------------------------------------------------------------
 class _PreviewThumb(QFrame):
     clicked = Signal(int)
@@ -523,6 +594,92 @@ class _PreviewThumb(QFrame):
 
 
 # ----------------------------------------------------------------------
+# Cột B — QScrollArea hỗ trợ kéo bằng chuột trái (pan) khi nội dung vượt khung,
+# và phát tín hiệu khi kích thước viewport đổi để widget cha tính lại chiều rộng
+# trang preview cho vừa khung (responsive fit-width). Đồng bộ với split_widget.py.
+# ----------------------------------------------------------------------
+class _PannablePreviewScrollArea(QScrollArea):
+    viewport_resized = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._panning = False
+        self._pan_start_pos = None
+        self._pan_start_h = 0
+        self._pan_start_v = 0
+        self.viewport().setCursor(Qt.OpenHandCursor)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.viewport_resized.emit()
+
+    def _event_pos(self, event):
+        if hasattr(event, "position"):
+            return event.position().toPoint()
+        return event.pos()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._panning = True
+            self._pan_start_pos = self._event_pos(event)
+            self._pan_start_h = self.horizontalScrollBar().value()
+            self._pan_start_v = self.verticalScrollBar().value()
+            self.viewport().setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._panning and self._pan_start_pos is not None:
+            delta = self._event_pos(event) - self._pan_start_pos
+            self.horizontalScrollBar().setValue(self._pan_start_h - delta.x())
+            self.verticalScrollBar().setValue(self._pan_start_v - delta.y())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self._panning:
+            self._panning = False
+            self._pan_start_pos = None
+            self.viewport().setCursor(Qt.OpenHandCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
+# ----------------------------------------------------------------------
+# Cột B — 1 trang placeholder trong khung xem trước lớn (mock, chưa nối pdf_core)
+# ----------------------------------------------------------------------
+class _MergePreviewPage(QFrame):
+    """1 khung trang trong danh sách cuộn liên tục bên phải — hiện số trang to
+    (placeholder, vì Merge chưa nối logic render PDF thật). Không highlight viền
+    cam khi "đang chọn" (khác với dải thumbnail trái) — theo yêu cầu, nội dung
+    preview giữ nguyên 1 kiểu, không cần trạng thái hover/current riêng."""
+
+    def __init__(self, page_number: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.page_number = page_number
+        self.aspect_ratio = _PREVIEW_PAGE_HEIGHT_DEFAULT / _PREVIEW_PAGE_WIDTH_FALLBACK
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setAlignment(Qt.AlignCenter)
+
+        self.number_label = QLabel(str(page_number))
+        self.number_label.setAlignment(Qt.AlignCenter)
+        self.number_label.setStyleSheet(
+            f"color: {COLOR_TEXT_SECONDARY}; font-size: 48px; font-weight: 700; "
+            "background: transparent; border: none;"
+        )
+        layout.addWidget(self.number_label)
+
+        self.setStyleSheet(
+            f"QFrame {{ background-color: white; border: 1px solid {COLOR_BORDER}; border-radius: 6px; }}"
+        )
+
+
+# ----------------------------------------------------------------------
 # Widget chính
 # ----------------------------------------------------------------------
 class MergeFeatureWidget(QWidget):
@@ -534,6 +691,15 @@ class MergeFeatureWidget(QWidget):
         self._current_total_pages = 0
         self._current_page = 0
         self._preview_thumbs: List[_PreviewThumb] = []
+
+        # Danh sách khung trang lớn (Cột B) + trạng thái zoom.
+        self._preview_pages: Dict[int, _MergePreviewPage] = {}
+        self._zoom_level: float = _ZOOM_DEFAULT
+        self._current_preview_width: Optional[int] = None
+        # Trang mock được dựng ngay trong __init__ (trước khi cửa sổ hiển thị xong),
+        # lúc đó viewport().width() đọc được còn sai (quá nhỏ) nên chiều rộng trang
+        # bị tính sai theo → cần tính lại đúng 1 lần khi widget thật sự hiển thị.
+        self._initial_width_applied = False
 
         root_layout = QHBoxLayout(self)
         root_layout.setContentsMargins(28, 24, 28, 24)
@@ -706,26 +872,36 @@ class MergeFeatureWidget(QWidget):
         header_row.addWidget(self.preview_title)
         header_row.addStretch()
 
-        self.prev_page_btn = QToolButton()
-        self.prev_page_btn.setIcon(qta.icon("mdi6.chevron-left", color=COLOR_TEXT_SECONDARY))
-        self.prev_page_btn.setCursor(Qt.PointingHandCursor)
-        self.prev_page_btn.setAutoRaise(True)
-        self.prev_page_btn.clicked.connect(lambda: self._change_page(-1))
-        header_row.addWidget(self.prev_page_btn)
+        # Cụm Zoom Out / % / Zoom In — thay cho nút chuyển trang cũ (◀ X/Y ▶),
+        # vì giờ xem trang bằng cách cuộn chuột liên tục thay vì nhảy từng trang.
+        self.zoom_out_btn = QToolButton()
+        self.zoom_out_btn.setCursor(Qt.PointingHandCursor)
+        self.zoom_out_btn.setIcon(qta.icon("mdi6.magnify-minus-outline", color=COLOR_TEXT_PRIMARY))
+        self.zoom_out_btn.setIconSize(QSize(16, 16))
+        self.zoom_out_btn.setFixedSize(26, 26)
+        self.zoom_out_btn.setStyleSheet(_zoom_button_style())
+        self.zoom_out_btn.setToolTip("Thu nhỏ (-15%)")
+        self.zoom_out_btn.clicked.connect(self._on_zoom_out_clicked)
+        header_row.addWidget(self.zoom_out_btn)
 
-        self.page_indicator = QLabel("0 / 0")
-        self.page_indicator.setStyleSheet(
-            f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; font-weight: 600; "
+        self.zoom_percent_label = QLabel(f"{round(_ZOOM_DEFAULT * 100)}%")
+        self.zoom_percent_label.setAlignment(Qt.AlignCenter)
+        self.zoom_percent_label.setFixedWidth(42)
+        self.zoom_percent_label.setStyleSheet(
+            f"color: {COLOR_TEXT_SECONDARY}; font-size: 12px; font-weight: 600; "
             "background: transparent; border: none;"
         )
-        header_row.addWidget(self.page_indicator)
+        header_row.addWidget(self.zoom_percent_label)
 
-        self.next_page_btn = QToolButton()
-        self.next_page_btn.setIcon(qta.icon("mdi6.chevron-right", color=COLOR_TEXT_SECONDARY))
-        self.next_page_btn.setCursor(Qt.PointingHandCursor)
-        self.next_page_btn.setAutoRaise(True)
-        self.next_page_btn.clicked.connect(lambda: self._change_page(1))
-        header_row.addWidget(self.next_page_btn)
+        self.zoom_in_btn = QToolButton()
+        self.zoom_in_btn.setCursor(Qt.PointingHandCursor)
+        self.zoom_in_btn.setIcon(qta.icon("mdi6.magnify-plus-outline", color=COLOR_TEXT_PRIMARY))
+        self.zoom_in_btn.setIconSize(QSize(16, 16))
+        self.zoom_in_btn.setFixedSize(26, 26)
+        self.zoom_in_btn.setStyleSheet(_zoom_button_style())
+        self.zoom_in_btn.setToolTip("Phóng to (+15%)")
+        self.zoom_in_btn.clicked.connect(self._on_zoom_in_clicked)
+        header_row.addWidget(self.zoom_in_btn)
 
         preview_card_layout.addLayout(header_row)
 
@@ -747,20 +923,34 @@ class MergeFeatureWidget(QWidget):
         self.thumb_scroll.setWidget(self.thumb_container)
         body_row.addWidget(self.thumb_scroll)
 
-        self.main_viewer = QFrame()
-        self.main_viewer.setStyleSheet(
-            f"QFrame {{ background-color: {COLOR_CONTENT_BG}; border: 1px solid {COLOR_BORDER}; border-radius: 10px; }}"
+        # Khung xem trước lớn — cuộn liên tục nhiều trang (thay cho khung 1 trang cố
+        # định trước đây), dùng _PannablePreviewScrollArea để hỗ trợ cuộn chuột +
+        # kéo chuột trái (pan) khi đã zoom to hơn khung, đồng bộ với split_widget.py.
+        self.preview_scroll_b = _PannablePreviewScrollArea()
+        self.preview_scroll_b.setWidgetResizable(True)
+        self.preview_scroll_b.setStyleSheet(
+            f"""
+            QScrollArea {{
+                background-color: {COLOR_CONTENT_BG};
+                border: 1px solid {COLOR_BORDER};
+                border-radius: 10px;
+            }}
+            {_SCROLLBAR_QSS}
+            """
         )
-        viewer_layout = QVBoxLayout(self.main_viewer)
-        viewer_layout.setAlignment(Qt.AlignCenter)
-        self.main_page_label = QLabel("—")
-        self.main_page_label.setAlignment(Qt.AlignCenter)
-        self.main_page_label.setStyleSheet(
-            f"color: {COLOR_TEXT_SECONDARY}; font-size: 56px; font-weight: 700; "
-            "background: transparent; border: none;"
+        self.preview_scroll_b.viewport_resized.connect(self._on_preview_viewport_resized)
+
+        preview_pages_container = QWidget()
+        preview_pages_container.setStyleSheet("background: transparent;")
+        self.preview_layout = QVBoxLayout(preview_pages_container)
+        self.preview_layout.setContentsMargins(
+            _PREVIEW_SIDE_MARGIN, 12, _PREVIEW_SIDE_MARGIN, 12
         )
-        viewer_layout.addWidget(self.main_page_label)
-        body_row.addWidget(self.main_viewer, 1)
+        self.preview_layout.setSpacing(16)
+        self.preview_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        self.preview_scroll_b.setWidget(preview_pages_container)
+
+        body_row.addWidget(self.preview_scroll_b, 1)
 
         preview_card_layout.addLayout(body_row, 1)
         column_b.addWidget(preview_card, 1)
@@ -776,6 +966,8 @@ class MergeFeatureWidget(QWidget):
         for f in _MOCK_FILES:
             self._add_file_row(f["name"], f["size"], f["pages"])
         self._select_first_available()
+        self._update_zoom_buttons_state()
+        self._update_zoom_percent_label()
 
     # ------------------------------------------------------------------
     # Quản lý danh sách file
@@ -898,7 +1090,9 @@ class MergeFeatureWidget(QWidget):
         self.file_list.clear()
         self._selected_row = None
         self._update_header_count()
+        self._zoom_level = _ZOOM_DEFAULT
         self._show_empty_preview()
+        self._update_zoom_percent_label()
         self._hide_result()
 
     def _on_merge_clicked(self) -> None:
@@ -936,6 +1130,7 @@ class MergeFeatureWidget(QWidget):
         self._current_page = 1 if pages > 0 else 0
         self.preview_title.setText(f"Xem trước: {name}")
         self._build_preview_thumbs(pages)
+        self._build_preview_pages(pages)
         self._refresh_page_view()
 
     def _show_empty_preview(self) -> None:
@@ -944,6 +1139,7 @@ class MergeFeatureWidget(QWidget):
         self._current_page = 0
         self.preview_title.setText("Xem trước: —")
         self._build_preview_thumbs(0)
+        self._build_preview_pages(0)
         self._refresh_page_view()
 
     def _build_preview_thumbs(self, total_pages: int) -> None:
@@ -976,36 +1172,118 @@ class MergeFeatureWidget(QWidget):
             self.thumb_layout.addWidget(wrapper)
             self._preview_thumbs.append(thumb)
 
+    def _build_preview_pages(self, total_pages: int) -> None:
+        """Dựng lại danh sách khung trang lớn (Cột B) theo file đang chọn — mỗi
+        khung là placeholder (mock), xếp dọc trong _PannablePreviewScrollArea để
+        cuộn chuột xem liên tục."""
+        for frame in self._preview_pages.values():
+            self.preview_layout.removeWidget(frame)
+            frame.deleteLater()
+        self._preview_pages.clear()
+        self._current_preview_width = None
+
+        if total_pages == 0:
+            self._update_zoom_buttons_state()
+            return
+
+        width = self._compute_preview_width()
+        self._current_preview_width = width
+        for i in range(total_pages):
+            page_number = i + 1
+            frame = _MergePreviewPage(page_number)
+            height = round(width * frame.aspect_ratio)
+            frame.setFixedSize(width, height)
+            self.preview_layout.addWidget(frame, alignment=Qt.AlignHCenter)
+            self._preview_pages[page_number] = frame
+
+        self._update_zoom_buttons_state()
+
     def _on_thumb_clicked(self, page_number: int) -> None:
         self._current_page = page_number
         self._refresh_page_view()
 
-    def _change_page(self, delta: int) -> None:
-        if self._current_total_pages == 0:
-            return
-        new_page = self._current_page + delta
-        if 1 <= new_page <= self._current_total_pages:
-            self._current_page = new_page
-            self._refresh_page_view()
-
     def _refresh_page_view(self) -> None:
-        if self._current_total_pages == 0:
-            self.page_indicator.setText("0 / 0")
-            self.main_page_label.setText("—")
-            self.prev_page_btn.setEnabled(False)
-            self.next_page_btn.setEnabled(False)
-            return
-
-        self.prev_page_btn.setEnabled(self._current_page > 1)
-        self.next_page_btn.setEnabled(self._current_page < self._current_total_pages)
-
-        self.page_indicator.setText(f"{self._current_page} / {self._current_total_pages}")
-        self.main_page_label.setText(str(self._current_page))
+        # Dải thumbnail trái: highlight đúng trang + cuộn cho thấy trang đó.
         for thumb in self._preview_thumbs:
             thumb.set_current(thumb.page_number == self._current_page)
         if 0 <= self._current_page - 1 < len(self._preview_thumbs):
-            current_widget = self._preview_thumbs[self._current_page - 1]
-            self.thumb_scroll.ensureWidgetVisible(current_widget, 0, 20)
+            current_thumb = self._preview_thumbs[self._current_page - 1]
+            self.thumb_scroll.ensureWidgetVisible(current_thumb, 0, 20)
+
+        # Khung lớn Cột B: chỉ cuộn tới đúng trang, không highlight viền (nội dung
+        # preview giữ nguyên 1 kiểu, không cần trạng thái hover/current riêng).
+        # Lưu ý: đây là đồng bộ 1 chiều — cuộn tay tự do trong khung lớn không
+        # cập nhật ngược lại highlight ở dải thumbnail trái (đã thống nhất với đại ca).
+        current_frame = self._preview_pages.get(self._current_page)
+        if current_frame is not None:
+            self.preview_scroll_b.ensureWidgetVisible(current_frame, 0, 0)
+
+    # ------------------------------------------------------------------
+    # Zoom cho khung xem trước lớn (Cột B) — đồng bộ với split_widget.py
+    # ------------------------------------------------------------------
+    def _fit_base_width(self) -> int:
+        viewport_width = self.preview_scroll_b.viewport().width()
+        usable = viewport_width - (_PREVIEW_SIDE_MARGIN * 2)
+        return max(_PREVIEW_MIN_PAGE_WIDTH, usable)
+
+    def _compute_preview_width(self) -> int:
+        base_width = self._fit_base_width()
+        return max(_PREVIEW_MIN_PAGE_WIDTH, round(base_width * self._zoom_level))
+
+    def _apply_preview_zoom(self) -> None:
+        if not self._preview_pages:
+            self._update_zoom_buttons_state()
+            self._update_zoom_percent_label()
+            return
+
+        new_width = self._compute_preview_width()
+        if new_width == self._current_preview_width:
+            self._update_zoom_buttons_state()
+            self._update_zoom_percent_label()
+            return
+        self._current_preview_width = new_width
+
+        for frame in self._preview_pages.values():
+            new_height = round(new_width * frame.aspect_ratio)
+            frame.setFixedSize(new_width, new_height)
+
+        self._update_zoom_buttons_state()
+        self._update_zoom_percent_label()
+
+    def _on_zoom_in_clicked(self) -> None:
+        self._set_zoom_level(self._zoom_level + _ZOOM_STEP)
+
+    def _on_zoom_out_clicked(self) -> None:
+        self._set_zoom_level(self._zoom_level - _ZOOM_STEP)
+
+    def _set_zoom_level(self, new_level: float) -> None:
+        clamped = max(_ZOOM_MIN, min(_ZOOM_MAX, round(new_level, 2)))
+        if abs(clamped - self._zoom_level) < 1e-6:
+            return
+        self._zoom_level = clamped
+        self._apply_preview_zoom()
+
+    def _update_zoom_buttons_state(self) -> None:
+        has_pages = bool(self._preview_pages)
+        self.zoom_in_btn.setEnabled(has_pages and self._zoom_level < _ZOOM_MAX - 1e-6)
+        self.zoom_out_btn.setEnabled(has_pages and self._zoom_level > _ZOOM_MIN + 1e-6)
+
+    def _update_zoom_percent_label(self) -> None:
+        self.zoom_percent_label.setText(f"{round(self._zoom_level * 100)}%")
+
+    def _on_preview_viewport_resized(self) -> None:
+        if self._preview_pages:
+            self._apply_preview_zoom()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        # Lần hiển thị đầu tiên: cửa sổ đã có kích thước thật, tính lại chiều rộng
+        # trang cho khớp khung Cột B thật sự (sửa lỗi khoảng trắng lớn 2 bên do
+        # trang mock bị dựng quá sớm lúc __init__, khi viewport còn chưa có size đúng).
+        if not self._initial_width_applied and self._preview_pages:
+            self._initial_width_applied = True
+            self._current_preview_width = None
+            self._apply_preview_zoom()
 
     # ------------------------------------------------------------------
     def _show_success(self, message: str) -> None:

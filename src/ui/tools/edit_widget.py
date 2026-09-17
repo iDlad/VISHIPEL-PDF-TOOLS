@@ -22,9 +22,11 @@ Bố cục 2 cột (A ~55% - B ~45%):
 
 LƯU Ý: đây vẫn là bước dựng UI + trạng thái trong bộ nhớ (mock, dùng _MOCK_PAGE_COUNT trang
 giả) — Move/Xoay/Xóa chưa gọi pdf_core.py / undo_manager.py thật, xem các TODO trong file.
-Vì bản chất chỉ đánh số lại liên tục 1..N theo vị trí mới (không giữ số trang gốc — theo
-đúng đặc tả), việc kiểm thử Move nên quan sát CHÍNH Ô thumbnail đang có viền xoay/Xóa dịch
-chuyển sang vị trí mới trong lưới, thay vì chỉ nhìn số badge.
+Số LỚN ở giữa mỗi thumbnail là "nội dung" mock (original_id) — CỐ ĐỊNH, không đổi khi Move,
+mô phỏng đúng hành vi của bản thật (mỗi thumbnail luôn hiển thị ảnh render của đúng trang gốc).
+Badge nhỏ "#..." ở góc trên mới là vị trí hiển thị hiện tại, được đánh lại liên tục 1..N sau
+mỗi lần Move — nhờ tách 2 khái niệm này, khi kiểm thử sẽ thấy rõ trang nào đã di chuyển tới
+đâu (VD: move trang nội dung "5" về đầu file → số lớn "5" xuất hiện ở ô đầu tiên, badge "#1").
 """
 from __future__ import annotations
 
@@ -135,9 +137,11 @@ class _EditPageThumbnail(QWidget):
     move_confirm_requested = Signal(object)  # emit(self) — self đang giữ vạch đỏ, xác nhận "Move đến đây"
     move_cancel_requested = Signal()  # hủy Move giữa chừng (không cần biết bấm từ thumbnail nào)
 
-    def __init__(self, page_number: int, parent: QWidget | None = None) -> None:
+    def __init__(self, original_id: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.page_number = page_number
+        self.original_id = original_id  # "nội dung" trang — CỐ ĐỊNH, không đổi khi Move (mock cho
+        # render_page_thumbnail() thật sau này: mỗi thumbnail luôn hiển thị đúng trang gốc của nó).
+        self.page_number = original_id  # vị trí hiển thị hiện tại (1..N) — cập nhật mỗi khi Move
         self.is_selected = False
         self.is_flagged = False  # đang được đánh dấu để xóa
         self.delete_mode = False
@@ -164,7 +168,18 @@ class _EditPageThumbnail(QWidget):
         card_layout.setContentsMargins(0, 0, 0, 4)
         card_layout.setSpacing(0)
 
-        self.number_label = QLabel(str(page_number))
+        # Badge vị trí hiện tại (góc trên) — đây là phần ĐƯỢC đánh số lại 1..N sau mỗi lần Move.
+        self.position_badge = QLabel(f"#{self.page_number}")
+        self.position_badge.setAlignment(Qt.AlignCenter)
+        self.position_badge.setStyleSheet(
+            f"color: {COLOR_TEXT_SECONDARY}; font-size: 10px; font-weight: 700; "
+            "background: transparent; border: none;"
+        )
+        card_layout.addWidget(self.position_badge)
+
+        # Số lớn = nội dung mock của trang (original_id) — KHÔNG đổi khi Move, để có thể quan
+        # sát trực quan trang nào đã di chuyển tới đâu (giống cách bản thật sẽ hiển thị).
+        self.number_label = QLabel(str(original_id))
         self.number_label.setAlignment(Qt.AlignCenter)
         self.number_label.setStyleSheet(
             f"color: {COLOR_TEXT_PRIMARY}; font-size: 26px; font-weight: 700; "
@@ -253,8 +268,10 @@ class _EditPageThumbnail(QWidget):
         self._move_active = active
 
     def set_page_number(self, number: int) -> None:
+        # Chỉ cập nhật vị trí hiển thị (badge góc trên) — KHÔNG đổi number_label (đó là
+        # original_id, đại diện nội dung trang thật, cố định vĩnh viễn qua các lần Move).
         self.page_number = number
-        self.number_label.setText(str(number))
+        self.position_badge.setText(f"#{number}")
 
     def apply_rotation(self, direction: str) -> None:
         delta = 90 if direction == "right" else -90
@@ -275,6 +292,13 @@ class _EditPageThumbnail(QWidget):
             # Chế độ Xóa: chuột phải toggle đánh dấu trực tiếp, không mở menu.
             self.set_flagged(not self.is_flagged)
             event.accept()
+            return
+
+        if self.is_flagged:
+            # Trang đã đánh dấu Xóa (từ trước, lúc checkbox đang bật) — chuột phải không còn
+            # tác dụng gì nữa (không Xoay, không Move/Move đến đây/Hủy Move) cho tới khi được
+            # bỏ đánh dấu (bật lại checkbox "Xóa" rồi chuột phải toggle như trên).
+            event.ignore()
             return
 
         menu = QMenu(self)
@@ -307,26 +331,23 @@ class _EditPageThumbnail(QWidget):
                 self.move_cancel_requested.emit()
             return
 
-        # Chế độ bình thường: không có lượt Move nào đang chạy.
+        # Chế độ bình thường: không có lượt Move nào đang chạy, trang chưa bị đánh dấu Xóa.
         rotate_left_action = menu.addAction(
             qta.icon("mdi6.rotate-left", color=COLOR_TEXT_PRIMARY), "Xoay trái 90°"
         )
         rotate_right_action = menu.addAction(
             qta.icon("mdi6.rotate-right", color=COLOR_TEXT_PRIMARY), "Xoay phải 90°"
         )
-        move_action = None
-        if not self.is_flagged:
-            # Trang đã đánh dấu Xóa không được chọn làm nguồn Move — ẩn hẳn mục này.
-            menu.addSeparator()
-            move_action = menu.addAction(
-                qta.icon("mdi6.cursor-move", color=COLOR_ACCENT), "Move"
-            )
+        menu.addSeparator()
+        move_action = menu.addAction(
+            qta.icon("mdi6.cursor-move", color=COLOR_ACCENT), "Move"
+        )
         chosen = menu.exec(event.globalPos())
         if chosen == rotate_left_action:
             self.rotate_requested.emit(self, "left")
         elif chosen == rotate_right_action:
             self.rotate_requested.emit(self, "right")
-        elif move_action is not None and chosen == move_action:
+        elif chosen == move_action:
             self.move_requested.emit(self)
 
 
@@ -868,7 +889,7 @@ class EditFeatureWidget(QWidget):
     # ------------------------------------------------------------------
     def _build_mock_preview_pages(self, layout: QVBoxLayout) -> None:
         for i in range(_MOCK_PAGE_COUNT):
-            page_number = i + 1
+            original_id = i + 1
             page_frame = QFrame()
             page_frame.setFixedSize(_PREVIEW_PAGE_WIDTH, _PREVIEW_PAGE_HEIGHT)
             page_frame.setStyleSheet(
@@ -876,15 +897,25 @@ class EditFeatureWidget(QWidget):
             )
             page_layout = QVBoxLayout(page_frame)
             page_layout.setAlignment(Qt.AlignCenter)
-            number_label = QLabel(str(page_number))
+
+            # Số lớn = nội dung mock của trang (original_id) — CỐ ĐỊNH, không đổi khi Move.
+            number_label = QLabel(str(original_id))
             number_label.setAlignment(Qt.AlignCenter)
             number_label.setStyleSheet(
                 f"color: {COLOR_TEXT_SECONDARY}; font-size: 48px; font-weight: 700; "
                 "background: transparent; border: none;"
             )
             page_layout.addWidget(number_label)
-            # Tham chiếu label để đánh lại số khi Move re-render Cột B theo thứ tự mới.
-            page_frame._number_label = number_label
+
+            # Nhãn vị trí hiện tại — ĐƯỢC cập nhật mỗi khi Move re-render Cột B theo thứ tự mới.
+            position_label = QLabel(f"Vị trí #{original_id}")
+            position_label.setAlignment(Qt.AlignCenter)
+            position_label.setStyleSheet(
+                f"color: {COLOR_TEXT_SECONDARY}; font-size: 13px; font-weight: 600; "
+                "background: transparent; border: none;"
+            )
+            page_layout.addWidget(position_label)
+            page_frame._position_label = position_label
 
             layout.addWidget(page_frame, alignment=Qt.AlignHCenter)
             self._preview_frames.append(page_frame)
@@ -912,8 +943,10 @@ class EditFeatureWidget(QWidget):
 
     def _on_thumbnail_clicked(self, thumb: _EditPageThumbnail) -> None:
         if self._move_source_thumb is not None:
-            if thumb is self._move_source_thumb:
-                return  # không thể chọn chính trang đang cut làm đích
+            if thumb is self._move_source_thumb or thumb.is_flagged:
+                # Không thể chọn chính trang đang cut, hoặc 1 trang đã đánh dấu Xóa, làm đích
+                # (trang đã đánh dấu Xóa không còn phản hồi chuột phải nên không thể xác nhận).
+                return
             self._set_move_target(thumb)
             return
         # Chuột trái ở chế độ bình thường: chỉ dùng để chọn trang xem preview.
@@ -1063,7 +1096,7 @@ class EditFeatureWidget(QWidget):
             preview_layout.takeAt(0)
         for idx, frame in enumerate(self._preview_frames):
             preview_layout.addWidget(frame, alignment=Qt.AlignHCenter)
-            frame._number_label.setText(str(idx + 1))
+            frame._position_label.setText(f"Vị trí #{idx + 1}")
 
     def _reset_mock_content(self) -> None:
         # Gỡ và hủy toàn bộ thumbnail + trang preview cũ, dựng lại từ đầu — dùng khi Clear

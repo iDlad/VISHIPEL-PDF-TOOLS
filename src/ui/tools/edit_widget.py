@@ -1,21 +1,34 @@
 """
-Giao diện tính năng Edit File — GIAI ĐOẠN THIẾT KẾ UI THUẦN (bố cục), theo khuôn mẫu split_widget.py.
+Giao diện tính năng Edit File — bố cục theo khuôn mẫu split_widget.py, đã bổ sung đầy đủ
+cơ chế "Move" (sắp xếp lại trang) theo đặc tả 02_dac_ta_tinh_nang.md mục 3.
 
-Bố cục 2 cột (A ~55% - B ~45%), giữ nguyên tỉ lệ và cấu trúc khung của Split:
-- Cột A: A1 khối chọn file (chỉ 1 file, giữ nguyên thiết kế Split) + A3 khung chứa tiêu đề
-  + lưới thumbnail (giữ nguyên thiết kế lưới, KHÁC ở chỗ: chuột phải vào 1 trang mở menu
-  "Xoay trái 90° / Xoay phải 90°").
-- Hàng thao tác dưới cùng (KHÁC Split — bỏ "Nhập số trang" + spin box + "Tùy chỉnh"):
-  Nhãn "Xóa" + checkbox → Undo → Clear → Lưu File (thay cho nút "Tách File").
-- Cột B: khung preview cuộn liên tục nhiều trang — giữ nguyên thiết kế Split, không đổi.
+Bố cục 2 cột (A ~55% - B ~45%):
+- Cột A: A1 khối chọn file (chỉ 1 file) + A3 khung chứa tiêu đề, vạch đích "đầu file"
+  (luôn hiển thị, chỉ có tác dụng khi đang Move) và lưới thumbnail 3 cột.
+- Chuột phải vào 1 trang (không có lượt Move nào đang chạy, chưa bị đánh dấu Xóa):
+  menu "Xoay trái 90° / Xoay phải 90° / Move".
+- Bấm "Move" → trang đó chuyển trạng thái "cut" (mờ xám, giống Cut file Windows); mọi
+  thumbnail khác + vạch đầu file chuyển menu chuột phải còn "Move đến đây" / "Hủy Move".
+  Click trái 1 thumbnail khác (hoặc vạch đầu file) để đặt "vạch đỏ" (đích chèn) + xem
+  preview; chuột phải ĐÚNG vị trí đang giữ vạch đỏ → "Move đến đây" để xác nhận
+  (2 bước tách biệt, KHÔNG gộp — bắt buộc phải click trái xác định vị trí trước).
+- Trang đã đánh dấu Xóa không được chọn làm nguồn Move (menu ẩn mục "Move").
+- Mỗi lượt Move chỉ áp dụng đúng 1 trang; mỗi lần Move hoàn tất sẽ đăng ký 1 bước riêng
+  vào undo_manager (khi được nối thật).
+- Hàng thao tác dưới cùng: Nhãn "Xóa" + checkbox (bị disable trong lúc đang Move) → Undo
+  → Clear → Lưu File.
+- Cột B: khung preview cuộn liên tục nhiều trang, re-render lại theo đúng thứ tự mới sau
+  mỗi lần Move — giữ nguyên thiết kế hiển thị của Split.
 
-LƯU Ý: đây là bước dựng BỐ CỤC theo yêu cầu của đại ca — hành vi chi tiết của checkbox "Xóa",
-Undo, và 2 mục trong menu chuột phải hiện đang là MOCK (chưa nối pdf_core.py / undo_manager.py),
-chờ đại ca mô tả thêm về thao tác rồi mới hoàn thiện logic thật.
+LƯU Ý: đây vẫn là bước dựng UI + trạng thái trong bộ nhớ (mock, dùng _MOCK_PAGE_COUNT trang
+giả) — Move/Xoay/Xóa chưa gọi pdf_core.py / undo_manager.py thật, xem các TODO trong file.
+Vì bản chất chỉ đánh số lại liên tục 1..N theo vị trí mới (không giữ số trang gốc — theo
+đúng đặc tả), việc kiểm thử Move nên quan sát CHÍNH Ô thumbnail đang có viền xoay/Xóa dịch
+chuyển sang vị trí mới trong lưới, thay vì chỉ nhìn số badge.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import qtawesome as qta
 from PySide6.QtCore import Qt, Signal, QSize
@@ -32,6 +45,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QFrame,
     QFileDialog,
+    QGraphicsOpacityEffect,
 )
 
 from src.ui.vishipel_theme import (
@@ -104,16 +118,22 @@ _CONTEXT_MENU_QSS = f"""
         background-color: {COLOR_ACCENT_LIGHT};
         color: {COLOR_TEXT_PRIMARY};
     }}
+    QMenu::item:disabled {{
+        color: {COLOR_TEXT_SECONDARY};
+    }}
 """
 
 
 # ----------------------------------------------------------------------
-# A3 — 1 ô trong lưới thumbnail: thumbnail giấy + trạng thái đánh dấu xóa.
-# Khi chế độ "Xóa" bật, chuột phải sẽ toggle đánh dấu xóa thay vì mở menu xoay.
+# A3 — 1 ô trong lưới thumbnail: thumbnail giấy + trạng thái đánh dấu xóa / cut / đích Move.
+# Khi chế độ "Xóa" bật, chuột phải sẽ toggle đánh dấu xóa thay vì mở menu.
 # ----------------------------------------------------------------------
 class _EditPageThumbnail(QWidget):
-    clicked = Signal(int)
-    rotate_requested = Signal(int, str)  # (page_number, "left" | "right")
+    clicked = Signal(object)  # emit(self) — chọn trang xem preview / chọn vị trí đích khi đang Move
+    rotate_requested = Signal(object, str)  # emit(self, "left" | "right")
+    move_requested = Signal(object)  # emit(self) — self muốn trở thành nguồn Move ("cut")
+    move_confirm_requested = Signal(object)  # emit(self) — self đang giữ vạch đỏ, xác nhận "Move đến đây"
+    move_cancel_requested = Signal()  # hủy Move giữa chừng (không cần biết bấm từ thumbnail nào)
 
     def __init__(self, page_number: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -121,6 +141,9 @@ class _EditPageThumbnail(QWidget):
         self.is_selected = False
         self.is_flagged = False  # đang được đánh dấu để xóa
         self.delete_mode = False
+        self.is_cut = False  # đang là nguồn của 1 lượt Move ("cắt" — mờ xám kiểu Cut Windows)
+        self.is_move_target = False  # đang giữ "vạch đỏ" — vị trí sẽ chèn trang cut vào ngay sau nó
+        self._move_active = False  # có 1 lượt Move (không nhất thiết của chính trang này) đang chạy
         # TODO Giai đoạn 2/3: rotation hiện chỉ là badge hiển thị tạm; khi có
         # render_page_thumbnail() thật từ pdf_core.py, thay bằng xoay ảnh PNG thật.
         self.rotation = 0
@@ -132,6 +155,9 @@ class _EditPageThumbnail(QWidget):
 
         self.card = QFrame()
         self.card.setFixedSize(_THUMB_SIZE, _THUMB_SIZE)
+        self._opacity_effect = QGraphicsOpacityEffect(self.card)
+        self._opacity_effect.setOpacity(1.0)
+        self.card.setGraphicsEffect(self._opacity_effect)
         self._apply_card_style()
 
         card_layout = QVBoxLayout(self.card)
@@ -146,6 +172,16 @@ class _EditPageThumbnail(QWidget):
         )
         card_layout.addWidget(self.number_label, stretch=1)
 
+        # Nhãn chỉ hiện khi trang này đang giữ "vạch đỏ" (đích sẽ chèn trang cut vào ngay sau nó).
+        self.move_target_label = QLabel("▼ Chèn vào đây")
+        self.move_target_label.setAlignment(Qt.AlignCenter)
+        self.move_target_label.setStyleSheet(
+            f"color: {COLOR_ERROR}; font-size: 10px; font-weight: 700; "
+            "background: transparent; border: none;"
+        )
+        self.move_target_label.hide()
+        card_layout.addWidget(self.move_target_label)
+
         # Badge góc xoay — chỉ hiện chữ khi trang đã bị xoay (VD "90°", "270°").
         self.rotation_badge = QLabel("")
         self.rotation_badge.setAlignment(Qt.AlignCenter)
@@ -157,10 +193,16 @@ class _EditPageThumbnail(QWidget):
 
         row_layout.addWidget(self.card)
 
-
     def _apply_card_style(self) -> None:
-        # Trạng thái đánh dấu xóa luôn được ưu tiên hơn trạng thái selected.
-        if self.is_flagged:
+        # Thứ tự ưu tiên hiển thị khi nhiều trạng thái "lý thuyết" trùng nhau:
+        # đang cut > đang là đích Move > đã đánh dấu xóa > đang chọn (preview) > bình thường.
+        if self.is_cut:
+            border = f"2px dashed {COLOR_BORDER_STRONG}"
+            background = "#F3F4F6"
+        elif self.is_move_target:
+            border = f"2.5px solid {COLOR_ERROR}"
+            background = "#FDECEC"
+        elif self.is_flagged:
             border = f"2px solid {COLOR_ERROR}"
             background = "#FDECEC"
         elif self.is_selected:
@@ -182,6 +224,7 @@ class _EditPageThumbnail(QWidget):
             }}
             """
         )
+        self._opacity_effect.setOpacity(0.4 if self.is_cut else 1.0)
 
     def set_selected(self, selected: bool) -> None:
         self.is_selected = selected
@@ -197,8 +240,21 @@ class _EditPageThumbnail(QWidget):
     def set_delete_mode(self, enabled: bool) -> None:
         self.delete_mode = enabled
 
-    def reset_flag(self) -> None:
-        self.set_flagged(False)
+    def set_cut(self, is_cut: bool) -> None:
+        self.is_cut = is_cut
+        self._apply_card_style()
+
+    def set_move_target(self, is_target: bool) -> None:
+        self.is_move_target = is_target
+        self.move_target_label.setVisible(is_target)
+        self._apply_card_style()
+
+    def set_move_mode_active(self, active: bool) -> None:
+        self._move_active = active
+
+    def set_page_number(self, number: int) -> None:
+        self.page_number = number
+        self.number_label.setText(str(number))
 
     def apply_rotation(self, direction: str) -> None:
         delta = 90 if direction == "right" else -90
@@ -212,7 +268,7 @@ class _EditPageThumbnail(QWidget):
     def mousePressEvent(self, event) -> None:
         super().mousePressEvent(event)
         if event.button() == Qt.LeftButton:
-            self.clicked.emit(self.page_number)
+            self.clicked.emit(self)
 
     def contextMenuEvent(self, event) -> None:
         if self.delete_mode:
@@ -221,20 +277,111 @@ class _EditPageThumbnail(QWidget):
             event.accept()
             return
 
-        # Chế độ bình thường: giữ nguyên menu xoay trái/phải.
         menu = QMenu(self)
         menu.setStyleSheet(_CONTEXT_MENU_QSS)
+
+        if self._move_active:
+            # Đang có 1 lượt Move chạy trong toàn bộ lưới (không nhất thiết là chính trang này).
+            if self.is_cut:
+                # Đây chính là trang nguồn đang "cut" — chỉ cho phép Hủy Move.
+                cancel_action = menu.addAction(
+                    qta.icon("mdi6.close-thick", color=COLOR_ERROR), "Hủy Move"
+                )
+                chosen = menu.exec(event.globalPos())
+                if chosen == cancel_action:
+                    self.move_cancel_requested.emit()
+                return
+
+            confirm_action = menu.addAction(
+                qta.icon("mdi6.check-bold", color=COLOR_ACCENT), "Move đến đây"
+            )
+            # Chỉ cho xác nhận đúng tại thumbnail đang giữ vạch đỏ (bắt buộc đã click trái chọn trước).
+            confirm_action.setEnabled(self.is_move_target)
+            cancel_action = menu.addAction(
+                qta.icon("mdi6.close-thick", color=COLOR_ERROR), "Hủy Move"
+            )
+            chosen = menu.exec(event.globalPos())
+            if chosen == confirm_action:
+                self.move_confirm_requested.emit(self)
+            elif chosen == cancel_action:
+                self.move_cancel_requested.emit()
+            return
+
+        # Chế độ bình thường: không có lượt Move nào đang chạy.
         rotate_left_action = menu.addAction(
             qta.icon("mdi6.rotate-left", color=COLOR_TEXT_PRIMARY), "Xoay trái 90°"
         )
         rotate_right_action = menu.addAction(
             qta.icon("mdi6.rotate-right", color=COLOR_TEXT_PRIMARY), "Xoay phải 90°"
         )
+        move_action = None
+        if not self.is_flagged:
+            # Trang đã đánh dấu Xóa không được chọn làm nguồn Move — ẩn hẳn mục này.
+            menu.addSeparator()
+            move_action = menu.addAction(
+                qta.icon("mdi6.cursor-move", color=COLOR_ACCENT), "Move"
+            )
         chosen = menu.exec(event.globalPos())
         if chosen == rotate_left_action:
-            self.rotate_requested.emit(self.page_number, "left")
+            self.rotate_requested.emit(self, "left")
         elif chosen == rotate_right_action:
-            self.rotate_requested.emit(self.page_number, "right")
+            self.rotate_requested.emit(self, "right")
+        elif move_action is not None and chosen == move_action:
+            self.move_requested.emit(self)
+
+
+# ----------------------------------------------------------------------
+# Vạch đích "đầu file" — vị trí đặc biệt để Move 1 trang về trước trang 1.
+# Luôn hiển thị cố định phía trên lưới thumbnail (đơn giản hóa hiển thị theo yêu cầu —
+# không cần canh chính xác ngay trên thumbnail #1); chỉ có tác dụng bấm khi đang Move.
+# ----------------------------------------------------------------------
+class _MoveHeadMarker(QFrame):
+    clicked = Signal()
+    confirm_requested = Signal()
+    cancel_requested = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.is_target = False
+        self._move_active = False
+        self.setFixedHeight(8)
+        self.setCursor(Qt.PointingHandCursor)
+        self._apply_style()
+
+    def _apply_style(self) -> None:
+        color = COLOR_ERROR if self.is_target else COLOR_BORDER_STRONG
+        self.setStyleSheet(f"QFrame {{ background-color: {color}; border-radius: 4px; }}")
+
+    def set_target(self, is_target: bool) -> None:
+        self.is_target = is_target
+        self._apply_style()
+
+    def set_move_mode_active(self, active: bool) -> None:
+        self._move_active = active
+
+    def mousePressEvent(self, event) -> None:
+        super().mousePressEvent(event)
+        if self._move_active and event.button() == Qt.LeftButton:
+            self.clicked.emit()
+
+    def contextMenuEvent(self, event) -> None:
+        if not self._move_active:
+            event.ignore()
+            return
+        menu = QMenu(self)
+        menu.setStyleSheet(_CONTEXT_MENU_QSS)
+        confirm_action = menu.addAction(
+            qta.icon("mdi6.check-bold", color=COLOR_ACCENT), "Move đến đây"
+        )
+        confirm_action.setEnabled(self.is_target)
+        cancel_action = menu.addAction(
+            qta.icon("mdi6.close-thick", color=COLOR_ERROR), "Hủy Move"
+        )
+        chosen = menu.exec(event.globalPos())
+        if chosen == confirm_action:
+            self.confirm_requested.emit()
+        elif chosen == cancel_action:
+            self.cancel_requested.emit()
 
 
 # ----------------------------------------------------------------------
@@ -377,7 +524,13 @@ class EditFeatureWidget(QWidget):
 
         self._selected_file_path: Optional[str] = None
         self._thumbnails: List[_EditPageThumbnail] = []
-        self._preview_pages: Dict[int, QFrame] = {}
+        self._preview_frames: List[QFrame] = []
+
+        # --- Trạng thái của 1 lượt Move đang chạy (None nếu không có lượt nào) ---
+        self._move_source_thumb: Optional[_EditPageThumbnail] = None
+        self._move_target_after: Optional[int] = None  # 0 = đầu file; k = ngay sau vị trí k
+        self._move_target_thumb: Optional[_EditPageThumbnail] = None
+        self._move_target_is_head: bool = False
 
         root_layout = QHBoxLayout(self)
         root_layout.setContentsMargins(28, 24, 28, 24)
@@ -392,7 +545,7 @@ class EditFeatureWidget(QWidget):
         self.drop_zone.file_selected.connect(self._on_file_selected)
         column_a.addWidget(self.drop_zone)
 
-        # --- Khung bao toàn bộ khu vực A3 (Header tiêu đề + Lưới Thumbnail) ---
+        # --- Khung bao toàn bộ khu vực A3 (Header tiêu đề + vạch đầu file + Lưới Thumbnail) ---
         a3_container = QFrame()
         a3_container.setStyleSheet(
             f"""
@@ -427,6 +580,21 @@ class EditFeatureWidget(QWidget):
         )
         a3_header_layout.addWidget(self.a3_title_label, stretch=1)
         a3_box_layout.addWidget(a3_header)
+
+        # Vạch đích "đầu file" — luôn hiển thị, chỉ có tác dụng bấm/chuột phải khi đang Move.
+        head_marker_wrap = QWidget()
+        head_marker_wrap.setStyleSheet("background: transparent;")
+        head_marker_layout = QHBoxLayout(head_marker_wrap)
+        head_marker_layout.setContentsMargins(28, 6, 28, 0)
+        self.head_marker = _MoveHeadMarker()
+        self.head_marker.setToolTip(
+            "Vị trí đầu file — trong lúc đang Move, bấm vào đây để chọn đích là đầu file"
+        )
+        self.head_marker.clicked.connect(self._on_head_marker_clicked)
+        self.head_marker.confirm_requested.connect(self._on_head_marker_confirm)
+        self.head_marker.cancel_requested.connect(self._on_move_cancel_requested)
+        head_marker_layout.addWidget(self.head_marker)
+        a3_box_layout.addWidget(head_marker_wrap)
 
         # A3: khung lưới thumbnail
         self.preview_scroll = QScrollArea()
@@ -689,6 +857,9 @@ class EditFeatureWidget(QWidget):
             thumb = _EditPageThumbnail(page_number)
             thumb.clicked.connect(self._on_thumbnail_clicked)
             thumb.rotate_requested.connect(self._on_rotate_requested)
+            thumb.move_requested.connect(self._on_move_requested)
+            thumb.move_confirm_requested.connect(self._on_move_confirm_requested)
+            thumb.move_cancel_requested.connect(self._on_move_cancel_requested)
             self.thumb_grid.addWidget(thumb, row, col)
             self._thumbnails.append(thumb)
 
@@ -712,69 +883,248 @@ class EditFeatureWidget(QWidget):
                 "background: transparent; border: none;"
             )
             page_layout.addWidget(number_label)
+            # Tham chiếu label để đánh lại số khi Move re-render Cột B theo thứ tự mới.
+            page_frame._number_label = number_label
 
             layout.addWidget(page_frame, alignment=Qt.AlignHCenter)
-            self._preview_pages[page_number] = page_frame
+            self._preview_frames.append(page_frame)
 
     # ------------------------------------------------------------------
-    # Sự kiện
+    # Sự kiện — Chọn file / Xóa / Chọn trang / Xoay
     # ------------------------------------------------------------------
     def _on_file_selected(self, path: str) -> None:
         self._selected_file_path = path
+        self.delete_checkbox.setChecked(False)
+        self.delete_checkbox.setEnabled(True)
+        self._force_reset_move_state()
+        self._reset_mock_content()
         self._select_page(1)
         self._hide_result()
 
     def _on_delete_mode_toggled(self, checked: bool) -> None:
         # Chỉ chuyển trạng thái tương tác. Các trang đã đánh dấu phải được giữ nguyên
         # để người dùng có thể tắt Xóa và tiếp tục xoay trang trước khi lưu.
+        if self._move_source_thumb is not None:
+            # An toàn: checkbox bị disable trong lúc đang Move nên nhánh này không nên xảy ra.
+            return
         for thumb in self._thumbnails:
             thumb.set_delete_mode(checked)
 
-    def _on_thumbnail_clicked(self, page_number: int) -> None:
-        # Chuột trái chỉ dùng để chọn trang và xem preview ở cột B.
-        # Không bao giờ thay đổi trạng thái đánh dấu xóa.
-        self._select_page(page_number)
+    def _on_thumbnail_clicked(self, thumb: _EditPageThumbnail) -> None:
+        if self._move_source_thumb is not None:
+            if thumb is self._move_source_thumb:
+                return  # không thể chọn chính trang đang cut làm đích
+            self._set_move_target(thumb)
+            return
+        # Chuột trái ở chế độ bình thường: chỉ dùng để chọn trang xem preview.
+        self._select_page(thumb.page_number)
 
-    def _on_rotate_requested(self, page_number: int, direction: str) -> None:
+    def _on_rotate_requested(self, thumb: _EditPageThumbnail, direction: str) -> None:
         # TODO Giai đoạn 2/3: gọi pdf_core.rotate_page() + undo_manager.register() thật.
-        thumb = self._thumbnails[page_number - 1]
         thumb.apply_rotation(direction)
         huong = "trái" if direction == "left" else "phải"
-        self._show_success(f"[Demo giao diện] Đã xoay {huong} 90° trang {page_number} — chưa xử lý PDF thật.")
+        self._show_success(
+            f"[Demo giao diện] Đã xoay {huong} 90° trang {thumb.page_number} — chưa xử lý PDF thật."
+        )
 
+    # ------------------------------------------------------------------
+    # Sự kiện — Cơ chế Move (sắp xếp lại trang)
+    # ------------------------------------------------------------------
+    def _on_move_requested(self, thumb: _EditPageThumbnail) -> None:
+        if self._move_source_thumb is not None or thumb.is_flagged:
+            # An toàn: không mở lượt Move mới khi đang có lượt khác chạy, hoặc trang đã đánh dấu xóa.
+            return
+        self._move_source_thumb = thumb
+        self._move_target_after = None
+        self._move_target_thumb = None
+        self._move_target_is_head = False
+        thumb.set_cut(True)
+        self.delete_checkbox.setEnabled(False)
+        for t in self._thumbnails:
+            t.set_move_mode_active(True)
+        self.head_marker.set_move_mode_active(True)
+        self._show_success(
+            f"[Demo giao diện] Đang di chuyển trang {thumb.page_number} — click trái chọn vị trí chèn "
+            '(hoặc vạch đầu file), sau đó chuột phải ĐÚNG vị trí đó và chọn "Move đến đây" để xác nhận.'
+        )
+
+    def _on_head_marker_clicked(self) -> None:
+        if self._move_source_thumb is None:
+            return
+        self._set_move_target(None)
+
+    def _set_move_target(self, thumb: Optional[_EditPageThumbnail]) -> None:
+        # Bỏ highlight vạch đỏ ở vị trí cũ (nếu có) trước khi đặt vị trí mới.
+        if self._move_target_thumb is not None:
+            self._move_target_thumb.set_move_target(False)
+        if self._move_target_is_head:
+            self.head_marker.set_target(False)
+
+        if thumb is None:
+            self._move_target_after = 0
+            self._move_target_thumb = None
+            self._move_target_is_head = True
+            self.head_marker.set_target(True)
+        else:
+            self._move_target_after = thumb.page_number
+            self._move_target_thumb = thumb
+            self._move_target_is_head = False
+            thumb.set_move_target(True)
+            self._select_page(thumb.page_number)
+
+    def _on_move_confirm_requested(self, thumb: Optional[_EditPageThumbnail]) -> None:
+        if self._move_source_thumb is None or self._move_target_after is None:
+            return
+        # Bắt buộc xác nhận đúng tại vị trí đang giữ vạch đỏ (không gộp bước chọn vị trí và xác nhận).
+        if thumb is None:
+            if not self._move_target_is_head:
+                return
+        elif thumb is not self._move_target_thumb:
+            return
+        self._execute_move()
+
+    def _on_head_marker_confirm(self) -> None:
+        self._on_move_confirm_requested(None)
+
+    def _execute_move(self) -> None:
+        source = self._move_source_thumb
+        target_after = self._move_target_after
+        old_pos = source.page_number
+        n = len(self._thumbnails)
+
+        # Tính hoán vị vị trí mới: bỏ vị trí cũ ra khỏi dãy 1..N rồi chèn lại ngay sau target_after
+        # (0 = đầu file). Sau vòng lặp, positions[i] = vị trí CŨ của trang sẽ nằm ở vị trí MỚI i+1.
+        positions = [p for p in range(1, n + 1) if p != old_pos]
+        insert_at = 0 if target_after == 0 else positions.index(target_after) + 1
+        positions.insert(insert_at, old_pos)
+
+        self._thumbnails = [self._thumbnails[p - 1] for p in positions]
+        self._preview_frames = [self._preview_frames[p - 1] for p in positions]
+
+        new_position = positions.index(old_pos) + 1
+        self._renumber_and_relayout()
+        self._end_move()
+        self._select_page(new_position)
+        self._show_success(
+            f"[Demo giao diện] Đã move trang tới vị trí {new_position} — chưa nối undo_manager.py / "
+            "pdf_core.reorder_pages() thật."
+        )
+        # TODO Giai đoạn 2/3: undo_manager.register("move", {...}) lưu lại vị trí cũ để Undo trả về đúng
+        # chỗ; khi bấm "Áp dụng"/"Lưu File", thứ tự cuối cùng của self._thumbnails chính là new_order
+        # truyền cho pdf_core.reorder_pages().
+
+    def _on_move_cancel_requested(self) -> None:
+        if self._move_source_thumb is None:
+            return
+        self._end_move()
+        self._show_success("[Demo giao diện] Đã hủy Move.")
+
+    def _end_move(self) -> None:
+        if self._move_source_thumb is not None:
+            self._move_source_thumb.set_cut(False)
+        if self._move_target_thumb is not None:
+            self._move_target_thumb.set_move_target(False)
+        if self._move_target_is_head:
+            self.head_marker.set_target(False)
+        self._move_source_thumb = None
+        self._move_target_after = None
+        self._move_target_thumb = None
+        self._move_target_is_head = False
+        for t in self._thumbnails:
+            t.set_move_mode_active(False)
+        self.head_marker.set_move_mode_active(False)
+        self.delete_checkbox.setEnabled(True)
+
+    def _force_reset_move_state(self) -> None:
+        # Dùng khi Clear/đổi file: các thumbnail cũ sắp bị deleteLater() nên chỉ cần xóa biến
+        # trạng thái, không cần gọi set_cut/set_move_target lên các widget sắp bị hủy.
+        self._move_source_thumb = None
+        self._move_target_after = None
+        self._move_target_thumb = None
+        self._move_target_is_head = False
+        self.head_marker.set_target(False)
+        self.head_marker.set_move_mode_active(False)
+        self.delete_checkbox.setEnabled(True)
+
+    def _renumber_and_relayout(self) -> None:
+        # Đánh lại số thứ tự liên tục 1..N theo vị trí mới (không giữ số trang gốc),
+        # rồi dựng lại lưới Cột A và ngăn xếp cuộn Cột B theo đúng thứ tự đó.
+        for idx, thumb in enumerate(self._thumbnails):
+            thumb.set_page_number(idx + 1)
+
+        while self.thumb_grid.count():
+            self.thumb_grid.takeAt(0)  # chỉ gỡ khỏi layout, KHÔNG hủy widget — giữ nguyên trạng thái
+        for idx, thumb in enumerate(self._thumbnails):
+            row, col = divmod(idx, _GRID_COLUMNS)
+            self.thumb_grid.addWidget(thumb, row, col)
+
+        preview_layout = self.preview_scroll_b.widget().layout()
+        while preview_layout.count():
+            preview_layout.takeAt(0)
+        for idx, frame in enumerate(self._preview_frames):
+            preview_layout.addWidget(frame, alignment=Qt.AlignHCenter)
+            frame._number_label.setText(str(idx + 1))
+
+    def _reset_mock_content(self) -> None:
+        # Gỡ và hủy toàn bộ thumbnail + trang preview cũ, dựng lại từ đầu — dùng khi Clear
+        # hoặc chọn file mới, để tránh giữ lại thứ tự/trạng thái Move của phiên trước.
+        for thumb in self._thumbnails:
+            self.thumb_grid.removeWidget(thumb)
+            thumb.setParent(None)
+            thumb.deleteLater()
+        self._thumbnails = []
+
+        preview_layout = self.preview_scroll_b.widget().layout()
+        for frame in self._preview_frames:
+            preview_layout.removeWidget(frame)
+            frame.setParent(None)
+            frame.deleteLater()
+        self._preview_frames = []
+
+        self._build_mock_grid()
+        self._build_mock_preview_pages(preview_layout)
+
+    # ------------------------------------------------------------------
+    # Sự kiện — Undo / Clear / Lưu File
+    # ------------------------------------------------------------------
     def _on_undo_clicked(self) -> None:
-        # TODO Giai đoạn 2/3: nối với undo_manager.py — hiện là mock.
+        # TODO Giai đoạn 2/3: nối với undo_manager.py thật (hoàn tác Move/Xoay/Xóa) — hiện là mock.
         self._show_success("[Demo giao diện] Nút Undo — chưa nối undo_manager.py thật.")
 
     def _on_clear_clicked(self) -> None:
         self._selected_file_path = None
         self.delete_checkbox.setChecked(False)
-        for thumb in self._thumbnails:
-            thumb.reset_flag()
-            thumb.reset_rotation()
+        self._force_reset_move_state()
+        self._reset_mock_content()
         self._select_page(1)
         self._hide_result()
 
     def _select_page(self, page_number: int) -> None:
         for thumb in self._thumbnails:
             thumb.set_selected(thumb.page_number == page_number)
-        target = self._preview_pages.get(page_number)
-        if target is not None:
+        if 1 <= page_number <= len(self._preview_frames):
+            target = self._preview_frames[page_number - 1]
             self.preview_scroll_b.ensureWidgetVisible(target, 0, 0)
 
     def _on_save_clicked(self) -> None:
         if not self._selected_file_path:
             self._show_error("Vui lòng chọn file PDF trước khi lưu.")
             return
+        if self._move_source_thumb is not None:
+            self._show_error(
+                "Đang có 1 trang ở trạng thái Move dở dang, vui lòng hoàn tất hoặc Hủy Move trước khi lưu."
+            )
+            return
 
         flagged = [t.page_number for t in self._thumbnails if t.is_flagged]
         rotated = {t.page_number: t.rotation for t in self._thumbnails if t.rotation}
 
-        # TODO Giai đoạn 2/3: gọi tuần tự pdf_core (rotate_page/delete_pages/reorder_pages)
-        # theo lịch sử undo_manager rồi ghi 1 file <tenfilegoc>_edited.pdf duy nhất.
+        # TODO Giai đoạn 2/3: gọi tuần tự pdf_core (reorder_pages theo thứ tự self._thumbnails
+        # hiện tại, rotate_page, delete_pages) theo lịch sử undo_manager rồi ghi 1 file
+        # <tenfilegoc>_edited.pdf duy nhất.
         self._show_success(
-            f"[Demo giao diện] Sẽ lưu file mới — xóa trang: {flagged or 'không có'}, "
-            f"xoay trang: {rotated or 'không có'} — chưa xử lý PDF thật."
+            f"[Demo giao diện] Sẽ lưu file mới theo đúng thứ tự hiện tại trên lưới — xóa trang: "
+            f"{flagged or 'không có'}, xoay trang: {rotated or 'không có'} — chưa xử lý PDF thật."
         )
 
     # ------------------------------------------------------------------

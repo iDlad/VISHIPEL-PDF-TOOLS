@@ -20,6 +20,8 @@ from src.ui.tools.split_widget import SplitFeatureWidget
 from src.ui.tools.merge_widget import MergeFeatureWidget
 from src.ui.tools.edit_widget import EditFeatureWidget
 from src.ui.tools.insert_widget import InsertFeatureWidget
+from src.ui.tools.watermark_widget import WatermarkFeatureWidget
+
 
 
 
@@ -63,6 +65,8 @@ class MainWindow(QMainWindow):
                 page = EditFeatureWidget()
             elif key == "insert":
                 page = InsertFeatureWidget()
+            elif key == "watermark":
+                page = WatermarkFeatureWidget()
             else:
                 page = PlaceholderFeatureWidget(label)
             index = self.content_stack.addWidget(page)

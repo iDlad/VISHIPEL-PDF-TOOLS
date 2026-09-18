@@ -444,3 +444,355 @@ class InsertSession:
         if self._working_b is not None:
             self._working_b.close()
             self._working_b = None
+
+# =============================================================================
+# 6. Bảo vệ PDF (Protection) — CHỈ BỔ SUNG, không sửa mục 1-5 phía trên.
+#    Xem 07_dac_ta_chot_bao_ve_va_watermark.md mục 2.
+# =============================================================================
+
+class WrongPasswordError(Exception):
+    """Mật khẩu nhập vào không đúng khi thử authenticate() để gỡ bảo vệ."""
+
+
+_ALL_PERMISSION_BITS = (
+    fitz.PDF_PERM_PRINT | fitz.PDF_PERM_MODIFY | fitz.PDF_PERM_COPY
+    | fitz.PDF_PERM_ANNOTATE | fitz.PDF_PERM_FORM | fitz.PDF_PERM_ACCESSIBILITY
+    | fitz.PDF_PERM_ASSEMBLE | fitz.PDF_PERM_PRINT_HQ
+)
+"""Gộp toàn bộ 8 cờ quyền hạn chuẩn của PyMuPDF — dùng làm mặt nạ so sánh để phát hiện
+'file có giới hạn quyền hay không', KHÔNG so sánh trực tiếp doc.permissions với -1: đã
+kiểm chứng thực tế PyMuPDF trả về permissions = -4 (không phải -1) cho 1 file hoàn toàn
+không hề được bảo vệ (do 2 bit thấp nhất trong permission luôn dự trữ = 0 theo chuẩn
+PDF), nên phải AND với mặt nạ này rồi so khớp thay vì tin vào 1 giá trị "đầy đủ" cố định."""
+
+
+@dataclass
+class ProtectionStatus:
+    """Trạng thái bảo vệ của 1 file — widget Bảo vệ dùng để quyết định luồng gỡ mật khẩu
+    (xem 07_...md mục 2.5): cần hỏi mật khẩu, hay chỉ cần hỏi xác nhận, hay không có gì để gỡ.
+
+    LƯU Ý QUAN TRỌNG (đã kiểm chứng thực tế, khác trực giác ban đầu): khi file chỉ có
+    Owner Password và User Password để trống, `fitz.open()` tự động authenticate thành
+    công bằng chuỗi rỗng NGAY LÚC MỞ — khiến `doc.is_encrypted` lập tức trả về False dù
+    file thực sự có giới hạn quyền. Vì vậy KHÔNG dùng `is_encrypted` để phát hiện trường
+    hợp owner-only — phải dùng `has_permission_restriction` (dựa trên bitmask
+    `doc.permissions`) như dưới đây."""
+    needs_password: bool               # True: file có User Password, bắt buộc nhập đúng mới đọc được
+    has_permission_restriction: bool   # True: có giới hạn quyền (Owner Password) dù mở tự do được
+    is_protected: bool                 # needs_password OR has_permission_restriction — tiện UI kiểm tra nhanh
+
+
+def calculate_password_strength(password: str) -> int:
+    """Heuristic thuần Python (không phụ thuộc PyMuPDF) để UI vẽ thanh đỏ-vàng-xanh
+    'Độ mạnh mật khẩu' (07_...md mục 2.2). Trả điểm 0-100, chỉ mang tính gợi ý trực quan,
+    không phải phép đo entropy thực sự."""
+    if not password:
+        return 0
+    score = min(len(password) * 6, 40)  # độ dài đóng góp tối đa 40 điểm
+    if any(c.islower() for c in password):
+        score += 15
+    if any(c.isupper() for c in password):
+        score += 15
+    if any(c.isdigit() for c in password):
+        score += 15
+    if any(not c.isalnum() for c in password):
+        score += 15
+    return min(score, 100)
+
+
+def build_protection_permissions(cam_in: bool, cam_chinh_sua: bool, cam_sao_chep: bool) -> int:
+    """Tính bitmask cho tham số `permissions=` của fitz — đúng ánh xạ đã chốt ở
+    07_...md mục 2.3. LƯU Ý NGHĨA THAM SỐ: giá trị nhận vào đúng theo checkbox trên UI
+    (True = đang tick = đang CẤM hành động đó), không phải 'có cho phép hay không'.
+
+    fitz.PDF_PERM_ACCESSIBILITY luôn được set, không phụ thuộc checkbox nào (quyền dành
+    cho phần mềm đọc màn hình hỗ trợ người khiếm thị)."""
+    perm = fitz.PDF_PERM_ACCESSIBILITY
+    if not cam_in:
+        perm |= fitz.PDF_PERM_PRINT
+    if not cam_chinh_sua:
+        perm |= fitz.PDF_PERM_MODIFY | fitz.PDF_PERM_ANNOTATE | fitz.PDF_PERM_FORM
+    if not cam_sao_chep:
+        perm |= fitz.PDF_PERM_COPY
+    return perm
+
+
+def protect_pdf(path: str, output_path: str, password: str,
+                 cam_in: bool = False, cam_chinh_sua: bool = False,
+                 cam_sao_chep: bool = False) -> str:
+    """Đặt mật khẩu (AES-256, cố định — 07_...md mục 2.1) + permission cho 1 file PDF,
+    xuất ra file MỚI, không ghi đè file gốc. Dùng CHUNG 1 `password` cho cả user_pw và
+    owner_pw (đã chốt 07_...md mục 2.2 — không tăng thêm bảo mật nếu tách 2 ô riêng).
+
+    File nguồn phải là file KHÔNG có mật khẩu sẵn (đi qua PDFDocument như mọi tính năng
+    khác — nếu cần bảo vệ lại 1 file đã có mật khẩu, phải Gỡ mật khẩu trước)."""
+    if not password:
+        raise ValueError("Mật khẩu không được để trống")
+
+    permissions = build_protection_permissions(cam_in, cam_chinh_sua, cam_sao_chep)
+    with PDFDocument(path) as doc:
+        try:
+            doc.raw.save(
+                output_path,
+                encryption=fitz.PDF_ENCRYPT_AES_256,
+                user_pw=password,
+                owner_pw=password,
+                permissions=permissions,
+            )
+        except Exception as exc:
+            raise FileLockedError(
+                f"Không thể ghi file (có thể đang bị khóa): {output_path}"
+            ) from exc
+    return output_path
+
+
+def get_protection_status(path: str) -> ProtectionStatus:
+    """Kiểm tra 1 file có đang được bảo vệ không, và có cần nhập mật khẩu mở hay không.
+
+    CỐ TÌNH mở bằng `fitz.open()` trực tiếp thay vì qua PDFDocument — vì PDFDocument
+    luôn raise PasswordProtectedError ngay khi needs_pass=True (đúng thiết kế bắt buộc
+    cho Tách/Gộp/Edit/Chèn). Riêng Bảo vệ/Gỡ mật khẩu cần tự mở được file có mật khẩu
+    nên phải tự quản lý việc mở file ở đây, không tái sử dụng PDFDocument."""
+    try:
+        doc = fitz.open(path)
+    except Exception as exc:
+        raise CorruptedFileError(f"Không thể mở file: {path}") from exc
+    try:
+        needs_password = doc.needs_pass
+        has_permission_restriction = (
+            not needs_password and (doc.permissions & _ALL_PERMISSION_BITS) != _ALL_PERMISSION_BITS
+        )
+        return ProtectionStatus(
+            needs_password=needs_password,
+            has_permission_restriction=has_permission_restriction,
+            is_protected=needs_password or has_permission_restriction,
+        )
+    finally:
+        doc.close()
+
+
+def remove_password(path: str, output_path: str, password: Optional[str] = None) -> str:
+    """Gỡ mật khẩu + mọi permission, xuất file MỚI hoàn toàn không còn mã hoá
+    (07_...md mục 2.5). KHÔNG ghi đè file gốc.
+
+    - File cần User Password (needs_pass=True): bắt buộc truyền đúng `password` —
+      sai sẽ raise WrongPasswordError để widget báo lỗi ngay tại ô nhập.
+    - File chỉ có Owner Password (needs_pass=False nhưng is_encrypted=True): không cần
+      `password` — widget phải tự hỏi xác nhận người dùng TRƯỚC KHI gọi hàm này (xem
+      get_protection_status để widget biết khi nào cần hỏi gì).
+    - File không hề được mã hoá: vẫn xuất ra bản sao bình thường, không lỗi.
+    """
+    try:
+        doc = fitz.open(path)
+    except Exception as exc:
+        raise CorruptedFileError(f"Không thể mở file: {path}") from exc
+
+    try:
+        if doc.needs_pass:
+            if not password or not doc.authenticate(password):
+                raise WrongPasswordError("Mật khẩu không đúng")
+        try:
+            doc.save(output_path, encryption=fitz.PDF_ENCRYPT_NONE)
+        except Exception as exc:
+            raise FileLockedError(
+                f"Không thể ghi file (có thể đang bị khóa): {output_path}"
+            ) from exc
+    finally:
+        doc.close()
+    return output_path
+
+
+# =============================================================================
+# 7. Chèn Watermark — CHỈ BỔ SUNG, không sửa mục 1-5 phía trên.
+#    Xem 07_dac_ta_chot_bao_ve_va_watermark.md mục 1.
+# =============================================================================
+
+SEGOE_UI_FONT_PATH = r"C:\Windows\Fonts\segoeui.ttf"
+"""Font cố định cho watermark chữ — đã chốt 07_...md mục 1.1. Có sẵn trên mọi máy
+Windows, hỗ trợ đầy đủ dấu tiếng Việt, không cần đóng gói/redistribute riêng."""
+
+_watermark_font_cache: Dict[str, "fitz.Font"] = {}
+
+
+class FontNotFoundError(Exception):
+    """Không nạp được font dùng cho watermark chữ (đường dẫn fontfile không tồn tại/hỏng)."""
+
+
+def _get_watermark_font(fontfile: str = SEGOE_UI_FONT_PATH) -> "fitz.Font":
+    """Nạp font 1 lần rồi cache lại — dùng `fitz.Font` (không dùng hàm rời
+    `fitz.get_text_length`, vì hàm này từng đổi tên/behavior giữa các bản PyMuPDF khác
+    nhau — `fitz.Font.text_length()` ổn định hơn và dùng được thẳng cho TextWriter)."""
+    cached = _watermark_font_cache.get(fontfile)
+    if cached is not None:
+        return cached
+    try:
+        font = fitz.Font(fontfile=fontfile)
+    except Exception as exc:
+        raise FontNotFoundError(f"Không nạp được font: {fontfile}") from exc
+    _watermark_font_cache[fontfile] = font
+    return font
+
+
+@dataclass
+class TextWatermarkConfig:
+    """Cấu hình watermark dạng chữ — 1-1 với các control ở Cột A của watermark_widget.py."""
+    text: str
+    font_size: int
+    color_rgb: Tuple[float, float, float]  # mỗi giá trị 0.0-1.0 (chuẩn màu của PyMuPDF)
+    opacity: float          # 0.0 - 1.0
+    rotation: float         # độ, 0-360 tuỳ ý (không giới hạn bội số 90)
+    layer_over: bool        # True = Foreground (đè lên nội dung), False = Background (nằm dưới)
+    fontfile: str = SEGOE_UI_FONT_PATH  # cố định Segoe UI theo 07_...md — không cho UI đổi
+
+
+@dataclass
+class ImageWatermarkConfig:
+    """Cấu hình watermark dạng ảnh — 1-1 với các control ở Cột A của watermark_widget.py."""
+    image_path: str
+    scale_percent: float    # % so với kích thước gốc của ảnh
+    opacity: float          # 0.0 - 1.0
+    rotation: float         # độ, 0-360 tuỳ ý
+    layer_over: bool
+
+
+def _tile_positions(page_width: float, page_height: float,
+                     item_width: float, item_height: float) -> List[Tuple[float, float]]:
+    """Tính toạ độ (x, y) góc trên-trái cho từng bản lặp watermark phủ toàn trang
+    (Tiling — 07_...md mục 1.3, chốt là chế độ vị trí DUY NHẤT, không có option khác).
+
+    Khoảng đệm giữa các bản lặp = 50% kích thước watermark đã render, hệ thống tự tính,
+    không cho người dùng chỉnh. Lưới bắt đầu lệch âm 1 nửa kích thước watermark để các
+    bản lặp phủ đều luôn cả phần sát mép trang, không để trống viền trắng quanh mép."""
+    if item_width <= 0 or item_height <= 0:
+        return []
+    padding = max(item_width, item_height) * 0.5
+    step_x = item_width + padding
+    step_y = item_height + padding
+
+    positions: List[Tuple[float, float]] = []
+    y = -item_height / 2
+    while y < page_height:
+        x = -item_width / 2
+        while x < page_width:
+            positions.append((x, y))
+            x += step_x
+        y += step_y
+    return positions
+
+
+def draw_text_watermark_tiled(page: "fitz.Page", config: TextWatermarkConfig) -> None:
+    """Vẽ watermark chữ lặp toàn trang lên 1 page ĐÃ MỞ SẴN — hàm này không tự save,
+    apply_watermark_to_pdf() chịu trách nhiệm ghi file 1 lần cho cả tài liệu.
+
+    BẮT BUỘC dùng `fitz.TextWriter` (không dùng `page.insert_text()` đơn giản) vì
+    `insert_text()` chỉ nhận `rotate` là bội số 90° — không đáp ứng được slider góc xoay
+    0-360° tuỳ ý đã chốt (07_...md mục 1.4.1). Mỗi bản lặp được vẽ bằng 1 TextWriter
+    riêng vì tham số `morph` của `write_text()` áp dụng cho TOÀN BỘ nội dung đã append
+    vào 1 TextWriter như MỘT phép biến đổi duy nhất quanh MỘT điểm neo — muốn mỗi bản
+    lặp tự xoay quanh tâm của chính nó thì phải tách TextWriter riêng cho từng bản."""
+    font = _get_watermark_font(config.fontfile)
+    text_width = font.text_length(config.text, fontsize=config.font_size)
+    text_height = config.font_size * 1.2  # hệ số dòng ước lượng, đủ dùng để tính spacing tiling
+
+    positions = _tile_positions(page.rect.width, page.rect.height, text_width, text_height)
+    for (x, y) in positions:
+        tw = fitz.TextWriter(page.rect, color=config.color_rgb)
+        baseline = fitz.Point(x, y + config.font_size)
+        tw.append(baseline, config.text, font=font, fontsize=config.font_size)
+
+        center = fitz.Point(x + text_width / 2, y + text_height / 2)
+        morph = (center, fitz.Matrix(1, 1).prerotate(config.rotation))
+        tw.write_text(page, opacity=config.opacity, morph=morph, overlay=config.layer_over)
+
+
+def _apply_opacity_to_pixmap(pixmap: "fitz.Pixmap", opacity: float) -> "fitz.Pixmap":
+    """Nhân kênh alpha hiện có với hệ số `opacity` (0.0-1.0). Cần bước này vì
+    `page.insert_image()` của PyMuPDF KHÔNG có tham số opacity trực tiếp như
+    `TextWriter.write_text()` — muốn slider Opacity của watermark ảnh có tác dụng thì
+    phải tự làm mờ ngay trên dữ liệu pixel trước khi chèn.
+
+    LƯU Ý QUAN TRỌNG (đã kiểm chứng thực tế bằng test, khác trực giác ban đầu):
+    `pixmap.n` của PyMuPDF đã BAO GỒM SẴN kênh alpha khi `pixmap.alpha=True` (VD ảnh RGB
+    có alpha thì `n=4`, không phải `n=3` rồi cộng riêng 1 cho alpha) — nên `stride` giữa
+    2 pixel liên tiếp = `pixmap.n`, và alpha luôn là byte CUỐI mỗi pixel, tức offset
+    `pixmap.n - 1`, KHÔNG PHẢI `pixmap.n`."""
+    if not pixmap.alpha:
+        pixmap = fitz.Pixmap(pixmap, 1)
+    samples = bytearray(pixmap.samples)
+    stride = pixmap.n            # đã bao gồm kênh alpha
+    alpha_offset = pixmap.n - 1  # alpha luôn là byte cuối cùng của mỗi pixel
+    for i in range(alpha_offset, len(samples), stride):
+        samples[i] = int(samples[i] * opacity)
+    return fitz.Pixmap(pixmap.colorspace, pixmap.width, pixmap.height, bytes(samples), True)
+
+
+def _rotate_image_to_bytes(image_path: str, rotation_degrees: float,
+                            opacity: float) -> Tuple[bytes, float, float]:
+    """'Bake' góc xoay tuỳ ý + opacity vào ảnh bằng chính PyMuPDF (không dùng Pillow —
+    đúng quy ước dự án). Trả về (PNG bytes đã xử lý, width mới, height mới).
+
+    Kỹ thuật (07_...md mục 1.4.2): dựng 1 trang PDF tạm chỉ chứa ảnh gốc, sau đó render
+    lại trang này qua `get_pixmap(matrix=...)` với ma trận đã prerotate — giữ nguyên
+    alpha xuyên suốt để nền không bị trắng đè lên."""
+    try:
+        pixmap_src = fitz.Pixmap(image_path)
+    except Exception as exc:
+        raise CorruptedFileError(f"Không thể đọc file ảnh: {image_path}") from exc
+
+    if pixmap_src.colorspace is None or pixmap_src.colorspace.n > 3:
+        pixmap_src = fitz.Pixmap(fitz.csRGB, pixmap_src)
+    pixmap_src = _apply_opacity_to_pixmap(pixmap_src, opacity)
+
+    tmp_doc = fitz.open()
+    try:
+        tmp_page = tmp_doc.new_page(width=pixmap_src.width, height=pixmap_src.height)
+        tmp_page.insert_image(tmp_page.rect, pixmap=pixmap_src, overlay=True)
+
+        rotate_matrix = fitz.Matrix(1, 1).prerotate(rotation_degrees)
+        rotated_rect = tmp_page.rect * rotate_matrix
+        # Dời gốc toạ độ về (0, 0) để render không bị cắt phần toạ độ âm sau khi xoay
+        shift_matrix = rotate_matrix * fitz.Matrix(1, 0, 0, 1, -rotated_rect.x0, -rotated_rect.y0)
+
+        rotated_pixmap = tmp_page.get_pixmap(matrix=shift_matrix, alpha=True)
+        data = rotated_pixmap.tobytes("png")
+        return data, rotated_pixmap.width, rotated_pixmap.height
+    finally:
+        tmp_doc.close()
+
+
+def draw_image_watermark_tiled(page: "fitz.Page", config: ImageWatermarkConfig) -> None:
+    """Vẽ watermark ảnh lặp toàn trang lên 1 page ĐÃ MỞ SẴN — hàm này không tự save,
+    apply_watermark_to_pdf() chịu trách nhiệm ghi file 1 lần cho cả tài liệu.
+
+    Cũng phải "bake" góc xoay vào ảnh trước (xem _rotate_image_to_bytes) vì
+    `page.insert_image()` chỉ nhận `rotate` là bội số 90°, giống hệt lý do với Text."""
+    rotated_bytes, base_w, base_h = _rotate_image_to_bytes(
+        config.image_path, config.rotation, config.opacity
+    )
+    scale = config.scale_percent / 100.0
+    item_w = base_w * scale
+    item_h = base_h * scale
+
+    positions = _tile_positions(page.rect.width, page.rect.height, item_w, item_h)
+    for (x, y) in positions:
+        rect = fitz.Rect(x, y, x + item_w, y + item_h)
+        page.insert_image(rect, stream=rotated_bytes, overlay=config.layer_over)
+
+
+def apply_watermark_to_pdf(path: str, output_path: str,
+                            text_config: Optional[TextWatermarkConfig] = None,
+                            image_config: Optional[ImageWatermarkConfig] = None) -> str:
+    """Áp watermark (đúng 1 trong 2: Text HOẶC Image, theo mode đang chọn trên UI) lặp
+    toàn trang lên MỌI trang của file, xuất ra file MỚI — không ghi đè file gốc (tuân
+    theo quy ước chung 02_dac_ta_tinh_nang.md mục 0)."""
+    if bool(text_config) == bool(image_config):
+        raise ValueError("Phải truyền đúng 1 trong 2: text_config hoặc image_config")
+
+    with PDFDocument(path) as doc:
+        for page in doc.raw:
+            if text_config is not None:
+                draw_text_watermark_tiled(page, text_config)
+            else:
+                draw_image_watermark_tiled(page, image_config)
+        _safe_save(doc.raw, output_path)
+    return output_path

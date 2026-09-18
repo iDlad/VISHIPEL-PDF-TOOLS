@@ -18,7 +18,10 @@ Bố cục 2 cột (A ~55% - B ~45%):
 - Hàng thao tác dưới cùng: Nhãn "Xóa" + checkbox (bị disable trong lúc đang Move) → Undo
   → Clear → Lưu File.
 - Cột B: khung preview cuộn liên tục nhiều trang, re-render lại theo đúng thứ tự mới sau
-  mỗi lần Move — giữ nguyên thiết kế hiển thị của Split.
+  mỗi lần Move. Bổ sung Zoom In/Out (±15%, 50%-200%, mặc định 100% = vừa khít khung, đồng
+  bộ với split_widget.py/merge_widget.py) + pan chuột trái khi đã zoom to hơn khung. Chiều
+  rộng trang được tính lại đúng 1 lần lúc cửa sổ hiển thị thật (showEvent) để tránh lỗi
+  khoảng trắng lớn 2 bên do khung mock dựng quá sớm lúc __init__.
 
 LƯU Ý: đây vẫn là bước dựng UI + trạng thái trong bộ nhớ (mock, dùng _MOCK_PAGE_COUNT trang
 giả) — Move/Xoay/Xóa chưa gọi pdf_core.py / undo_manager.py thật, xem các TODO trong file.
@@ -69,8 +72,22 @@ _MOCK_PAGE_COUNT = 11
 _GRID_COLUMNS = 3
 _THUMB_SIZE = 128
 
-_PREVIEW_PAGE_WIDTH = 340
-_PREVIEW_PAGE_HEIGHT = 460
+# Tỉ lệ khung hình của khung trang mock (Cột B) — chiều rộng thực tế giờ co giãn theo
+# khung hiển thị + hệ số zoom (xem _compute_preview_width()), không còn cố định 340px.
+_PREVIEW_PAGE_WIDTH_FALLBACK = 340
+_PREVIEW_PAGE_HEIGHT_DEFAULT = 460
+
+# Zoom Cột B: mỗi lần bấm Zoom In/Out ±15%, giới hạn 50%-200%.
+# Mặc định 100% = chiều rộng "vừa khít khung hiển thị" hiện tại — đồng bộ với
+# split_widget.py / merge_widget.py.
+_ZOOM_MIN = 0.5
+_ZOOM_MAX = 2.0
+_ZOOM_STEP = 0.15
+_ZOOM_DEFAULT = 1.0
+
+# Lề trái/phải giữa nội dung preview và biên khung Cột B.
+_PREVIEW_SIDE_MARGIN = 12
+_PREVIEW_MIN_PAGE_WIDTH = 220
 
 _CHECKBOX_SIZE = 22
 _CHECKBOX_RADIUS = round(CORNER_RADIUS * _CHECKBOX_SIZE / CONTROL_HEIGHT)
@@ -124,6 +141,28 @@ _CONTEXT_MENU_QSS = f"""
         color: {COLOR_TEXT_SECONDARY};
     }}
 """
+
+
+def _zoom_button_style() -> str:
+    """Style cho 2 nút Zoom In/Out ở header Cột B — đồng bộ với split_widget.py."""
+    return f"""
+        QToolButton {{
+            background-color: white;
+            border: 1.5px solid {COLOR_BORDER_STRONG};
+            border-radius: 6px;
+        }}
+        QToolButton:hover:enabled {{
+            background-color: {COLOR_ACCENT_LIGHT};
+            border-color: {COLOR_ACCENT};
+        }}
+        QToolButton:pressed:enabled {{
+            background-color: {COLOR_ACCENT};
+        }}
+        QToolButton:disabled {{
+            background-color: #F3F4F6;
+            border-color: {COLOR_BORDER};
+        }}
+        """
 
 
 # ----------------------------------------------------------------------
@@ -443,6 +482,61 @@ class _CheckToggle(QToolButton):
 
 
 # ----------------------------------------------------------------------
+# Cột B — QScrollArea hỗ trợ kéo bằng chuột trái (pan) khi nội dung vượt khung,
+# và phát tín hiệu khi kích thước viewport đổi để widget cha tính lại chiều rộng
+# trang preview cho vừa khung (responsive fit-width). Đồng bộ với split_widget.py.
+# ----------------------------------------------------------------------
+class _PannablePreviewScrollArea(QScrollArea):
+    viewport_resized = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._panning = False
+        self._pan_start_pos = None
+        self._pan_start_h = 0
+        self._pan_start_v = 0
+        self.viewport().setCursor(Qt.OpenHandCursor)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.viewport_resized.emit()
+
+    def _event_pos(self, event):
+        if hasattr(event, "position"):
+            return event.position().toPoint()
+        return event.pos()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._panning = True
+            self._pan_start_pos = self._event_pos(event)
+            self._pan_start_h = self.horizontalScrollBar().value()
+            self._pan_start_v = self.verticalScrollBar().value()
+            self.viewport().setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._panning and self._pan_start_pos is not None:
+            delta = self._event_pos(event) - self._pan_start_pos
+            self.horizontalScrollBar().setValue(self._pan_start_h - delta.x())
+            self.verticalScrollBar().setValue(self._pan_start_v - delta.y())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self._panning:
+            self._panning = False
+            self._pan_start_pos = None
+            self.viewport().setCursor(Qt.OpenHandCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
+# ----------------------------------------------------------------------
 # A1 — Khối chọn file (giữ nguyên thiết kế Split — chỉ 1 file)
 # ----------------------------------------------------------------------
 class _DropZone(QFrame):
@@ -552,6 +646,14 @@ class EditFeatureWidget(QWidget):
         self._move_target_after: Optional[int] = None  # 0 = đầu file; k = ngay sau vị trí k
         self._move_target_thumb: Optional[_EditPageThumbnail] = None
         self._move_target_is_head: bool = False
+
+        # --- Zoom Cột B ---
+        self._zoom_level: float = _ZOOM_DEFAULT
+        self._current_preview_width: Optional[int] = None
+        # Khung mock được dựng ngay trong __init__ (trước khi cửa sổ hiển thị xong),
+        # lúc đó viewport().width() đọc được còn sai (quá nhỏ) — cần tính lại đúng 1
+        # lần khi widget thật sự hiển thị (xem showEvent()).
+        self._initial_width_applied = False
 
         root_layout = QHBoxLayout(self)
         root_layout.setContentsMargins(28, 24, 28, 24)
@@ -829,9 +931,43 @@ class EditFeatureWidget(QWidget):
             "background: transparent; border: none;"
         )
         b_header_layout.addWidget(self.preview_title_label, stretch=1)
+
+        # Cụm Zoom Out / % / Zoom In — canh phải cùng hàng tiêu đề (title đã chiếm
+        # stretch=1 ở trên nên các widget thêm sau tự động dồn sang phải).
+        self.zoom_out_btn = QToolButton()
+        self.zoom_out_btn.setCursor(Qt.PointingHandCursor)
+        self.zoom_out_btn.setIcon(qta.icon("mdi6.magnify-minus-outline", color=COLOR_TEXT_PRIMARY))
+        self.zoom_out_btn.setIconSize(QSize(16, 16))
+        self.zoom_out_btn.setFixedSize(26, 26)
+        self.zoom_out_btn.setStyleSheet(_zoom_button_style())
+        self.zoom_out_btn.setToolTip("Thu nhỏ (-15%)")
+        self.zoom_out_btn.clicked.connect(self._on_zoom_out_clicked)
+        b_header_layout.addWidget(self.zoom_out_btn)
+
+        self.zoom_percent_label = QLabel(f"{round(_ZOOM_DEFAULT * 100)}%")
+        self.zoom_percent_label.setAlignment(Qt.AlignCenter)
+        self.zoom_percent_label.setFixedWidth(42)
+        self.zoom_percent_label.setStyleSheet(
+            f"color: {COLOR_TEXT_SECONDARY}; font-size: 12px; font-weight: 600; "
+            "background: transparent; border: none;"
+        )
+        b_header_layout.addWidget(self.zoom_percent_label)
+
+        self.zoom_in_btn = QToolButton()
+        self.zoom_in_btn.setCursor(Qt.PointingHandCursor)
+        self.zoom_in_btn.setIcon(qta.icon("mdi6.magnify-plus-outline", color=COLOR_TEXT_PRIMARY))
+        self.zoom_in_btn.setIconSize(QSize(16, 16))
+        self.zoom_in_btn.setFixedSize(26, 26)
+        self.zoom_in_btn.setStyleSheet(_zoom_button_style())
+        self.zoom_in_btn.setToolTip("Phóng to (+15%)")
+        self.zoom_in_btn.clicked.connect(self._on_zoom_in_clicked)
+        b_header_layout.addWidget(self.zoom_in_btn)
+
         preview_box_layout.addWidget(b_header)
 
-        self.preview_scroll_b = QScrollArea()
+        # Khung Preview cuộn dọc — dùng _PannablePreviewScrollArea để hỗ trợ kéo
+        # bằng chuột trái (pan) và báo khi kích thước khung đổi (responsive fit-width).
+        self.preview_scroll_b = _PannablePreviewScrollArea()
         self.preview_scroll_b.setWidgetResizable(True)
         self.preview_scroll_b.setStyleSheet(
             f"""
@@ -842,11 +978,12 @@ class EditFeatureWidget(QWidget):
             {_SCROLLBAR_QSS}
             """
         )
+        self.preview_scroll_b.viewport_resized.connect(self._on_preview_viewport_resized)
 
         preview_container = QWidget()
         preview_container.setStyleSheet("background: transparent;")
         preview_layout = QVBoxLayout(preview_container)
-        preview_layout.setContentsMargins(16, 16, 16, 16)
+        preview_layout.setContentsMargins(_PREVIEW_SIDE_MARGIN, 12, _PREVIEW_SIDE_MARGIN, 12)
         preview_layout.setSpacing(16)
         preview_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self._build_mock_preview_pages(preview_layout)
@@ -866,6 +1003,18 @@ class EditFeatureWidget(QWidget):
 
         # Mặc định chọn trang 1
         self._select_page(1)
+        self._update_zoom_buttons_state()
+        self._update_zoom_percent_label()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        # Lần hiển thị đầu tiên: cửa sổ đã có kích thước thật, tính lại chiều rộng
+        # trang cho khớp khung Cột B thật sự (sửa lỗi khoảng trắng lớn 2 bên do
+        # khung mock bị dựng quá sớm lúc __init__, khi viewport còn chưa có size đúng).
+        if not self._initial_width_applied and self._preview_frames:
+            self._initial_width_applied = True
+            self._current_preview_width = None
+            self._apply_preview_zoom()
 
     # ------------------------------------------------------------------
     # Xây lưới thumbnail giả (A3)
@@ -888,10 +1037,15 @@ class EditFeatureWidget(QWidget):
     # Xây các trang Preview giả — xếp dọc liên tục để cuộn (Cột B)
     # ------------------------------------------------------------------
     def _build_mock_preview_pages(self, layout: QVBoxLayout) -> None:
+        width = self._compute_preview_width()
+        self._current_preview_width = width
+        aspect_ratio = _PREVIEW_PAGE_HEIGHT_DEFAULT / _PREVIEW_PAGE_WIDTH_FALLBACK
+        height = round(width * aspect_ratio)
+
         for i in range(_MOCK_PAGE_COUNT):
             original_id = i + 1
             page_frame = QFrame()
-            page_frame.setFixedSize(_PREVIEW_PAGE_WIDTH, _PREVIEW_PAGE_HEIGHT)
+            page_frame.setFixedSize(width, height)
             page_frame.setStyleSheet(
                 f"QFrame {{ background-color: white; border: 1px solid {COLOR_BORDER}; border-radius: 6px; }}"
             )
@@ -919,6 +1073,66 @@ class EditFeatureWidget(QWidget):
 
             layout.addWidget(page_frame, alignment=Qt.AlignHCenter)
             self._preview_frames.append(page_frame)
+
+        self._update_zoom_buttons_state()
+
+    # ------------------------------------------------------------------
+    # Zoom + Pan cho khu vực Xem trước (Cột B) — đồng bộ với split_widget.py
+    # ------------------------------------------------------------------
+    def _fit_base_width(self) -> int:
+        viewport_width = self.preview_scroll_b.viewport().width()
+        usable = viewport_width - (_PREVIEW_SIDE_MARGIN * 2)
+        return max(_PREVIEW_MIN_PAGE_WIDTH, usable)
+
+    def _compute_preview_width(self) -> int:
+        base_width = self._fit_base_width()
+        return max(_PREVIEW_MIN_PAGE_WIDTH, round(base_width * self._zoom_level))
+
+    def _apply_preview_zoom(self) -> None:
+        if not self._preview_frames:
+            self._update_zoom_buttons_state()
+            self._update_zoom_percent_label()
+            return
+
+        new_width = self._compute_preview_width()
+        if new_width == self._current_preview_width:
+            self._update_zoom_buttons_state()
+            self._update_zoom_percent_label()
+            return
+        self._current_preview_width = new_width
+
+        aspect_ratio = _PREVIEW_PAGE_HEIGHT_DEFAULT / _PREVIEW_PAGE_WIDTH_FALLBACK
+        new_height = round(new_width * aspect_ratio)
+        for frame in self._preview_frames:
+            frame.setFixedSize(new_width, new_height)
+
+        self._update_zoom_buttons_state()
+        self._update_zoom_percent_label()
+
+    def _on_zoom_in_clicked(self) -> None:
+        self._set_zoom_level(self._zoom_level + _ZOOM_STEP)
+
+    def _on_zoom_out_clicked(self) -> None:
+        self._set_zoom_level(self._zoom_level - _ZOOM_STEP)
+
+    def _set_zoom_level(self, new_level: float) -> None:
+        clamped = max(_ZOOM_MIN, min(_ZOOM_MAX, round(new_level, 2)))
+        if abs(clamped - self._zoom_level) < 1e-6:
+            return
+        self._zoom_level = clamped
+        self._apply_preview_zoom()
+
+    def _update_zoom_buttons_state(self) -> None:
+        has_pages = bool(self._preview_frames)
+        self.zoom_in_btn.setEnabled(has_pages and self._zoom_level < _ZOOM_MAX - 1e-6)
+        self.zoom_out_btn.setEnabled(has_pages and self._zoom_level > _ZOOM_MIN + 1e-6)
+
+    def _update_zoom_percent_label(self) -> None:
+        self.zoom_percent_label.setText(f"{round(self._zoom_level * 100)}%")
+
+    def _on_preview_viewport_resized(self) -> None:
+        if self._preview_frames:
+            self._apply_preview_zoom()
 
     # ------------------------------------------------------------------
     # Sự kiện — Chọn file / Xóa / Chọn trang / Xoay
@@ -1128,7 +1342,9 @@ class EditFeatureWidget(QWidget):
         self._selected_file_path = None
         self.delete_checkbox.setChecked(False)
         self._force_reset_move_state()
+        self._zoom_level = _ZOOM_DEFAULT
         self._reset_mock_content()
+        self._update_zoom_percent_label()
         self._select_page(1)
         self._hide_result()
 

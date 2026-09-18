@@ -244,7 +244,7 @@ class _EditPageThumbnail(QWidget):
         # bo góc — luôn hiển thị mọi lúc, đè lên trên mọi nội dung khác trong card.
         # Đây là phần ĐƯỢC đánh số lại 1..N sau mỗi lần Move (khác với number_label/
         # original_id — nội dung trang thật, cố định vĩnh viễn qua các lần Move).
-        self.position_badge = QLabel(f"#{self.page_number}", self.card)
+        self.position_badge = QLabel(f"{self.page_number}", self.card)
         self.position_badge.setAlignment(Qt.AlignCenter)
         self.position_badge.setStyleSheet(
             "background-color: rgba(15, 23, 42, 0.78); color: white; "

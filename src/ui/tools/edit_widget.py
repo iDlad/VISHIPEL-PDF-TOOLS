@@ -207,15 +207,6 @@ class _EditPageThumbnail(QWidget):
         card_layout.setContentsMargins(0, 0, 0, 4)
         card_layout.setSpacing(0)
 
-        # Badge vị trí hiện tại (góc trên) — đây là phần ĐƯỢC đánh số lại 1..N sau mỗi lần Move.
-        self.position_badge = QLabel(f"#{self.page_number}")
-        self.position_badge.setAlignment(Qt.AlignCenter)
-        self.position_badge.setStyleSheet(
-            f"color: {COLOR_TEXT_SECONDARY}; font-size: 10px; font-weight: 700; "
-            "background: transparent; border: none;"
-        )
-        card_layout.addWidget(self.position_badge)
-
         # Số lớn = nội dung mock của trang (original_id) — KHÔNG đổi khi Move, để có thể quan
         # sát trực quan trang nào đã di chuyển tới đâu (giống cách bản thật sẽ hiển thị).
         self.number_label = QLabel(str(original_id))
@@ -246,6 +237,22 @@ class _EditPageThumbnail(QWidget):
         card_layout.addWidget(self.rotation_badge)
 
         row_layout.addWidget(self.card)
+
+        # Badge vị trí hiện tại — ĐỒNG BỘ hiển thị với split_widget.py (_PageThumbnail):
+        # nhãn nổi, geometry tuyệt đối cố định góc trên-trái của card (không nằm trong
+        # card_layout để không chiếm chỗ dọc như bản cũ), nền tối trong suốt, chữ trắng,
+        # bo góc — luôn hiển thị mọi lúc, đè lên trên mọi nội dung khác trong card.
+        # Đây là phần ĐƯỢC đánh số lại 1..N sau mỗi lần Move (khác với number_label/
+        # original_id — nội dung trang thật, cố định vĩnh viễn qua các lần Move).
+        self.position_badge = QLabel(f"#{self.page_number}", self.card)
+        self.position_badge.setAlignment(Qt.AlignCenter)
+        self.position_badge.setStyleSheet(
+            "background-color: rgba(15, 23, 42, 0.78); color: white; "
+            "font-size: 11px; font-weight: 700; border-radius: 8px; padding: 2px 6px;"
+        )
+        self.position_badge.adjustSize()
+        self.position_badge.move(6, 6)
+        self.position_badge.raise_()
 
     def _apply_card_style(self) -> None:
         # Thứ tự ưu tiên hiển thị khi nhiều trạng thái "lý thuyết" trùng nhau:
@@ -311,6 +318,8 @@ class _EditPageThumbnail(QWidget):
         # original_id, đại diện nội dung trang thật, cố định vĩnh viễn qua các lần Move).
         self.page_number = number
         self.position_badge.setText(f"#{number}")
+        self.position_badge.adjustSize()
+        self.position_badge.raise_()
 
     def apply_rotation(self, direction: str) -> None:
         delta = 90 if direction == "right" else -90

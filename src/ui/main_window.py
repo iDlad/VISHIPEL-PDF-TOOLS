@@ -21,7 +21,7 @@ from src.ui.tools.merge_widget import MergeFeatureWidget
 from src.ui.tools.edit_widget import EditFeatureWidget
 from src.ui.tools.insert_widget import InsertFeatureWidget
 from src.ui.tools.watermark_widget import WatermarkFeatureWidget
-
+from src.ui.tools.protect_feature_widget import ProtectFeatureWidget
 
 
 
@@ -67,6 +67,8 @@ class MainWindow(QMainWindow):
                 page = InsertFeatureWidget()
             elif key == "watermark":
                 page = WatermarkFeatureWidget()
+            elif key == "protect":
+                page = ProtectFeatureWidget()
             else:
                 page = PlaceholderFeatureWidget(label)
             index = self.content_stack.addWidget(page)

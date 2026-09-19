@@ -8,3 +8,11 @@
 2026-09-18 12:18:44 [INFO] Tách file thành công: 'D:/Projects/Test file1.pdf' -> 6 file tại 'D:/Temp'
 2026-09-19 08:09:53 [INFO] Tách file thành công: 'D:/Projects/Test/PDF_Merger.pdf' -> 7 file tại 'D:/Projects/Test'
 2026-09-19 08:57:37 [INFO] Tách file thành công: 'D:/Projects/Test/PDF_Merger.pdf' -> 7 file tại 'D:/Projects/Test'
+2026-09-19 11:04:36 [INFO] Tách file thành công: 'D:/Projects/Test/PDF_Merger.pdf' -> 7 file tại 'D:/Projects/Test'
+2026-09-19 13:42:23 [INFO] Tách file thành công: 'D:/Projects/Test/PDF_Merger.pdf' -> 10 file tại 'D:/Projects/Test'
+2026-09-19 13:42:49 [INFO] Đã chọn File A (Insert): D:/Projects/Test/PDF_Merger.pdf
+2026-09-19 13:42:51 [INFO] Đã chọn File B (Insert): D:/Projects/Test/PDF_Split_01.pdf
+2026-09-19 13:43:04 [INFO] Đã chèn trang 2 của File A vào File B tại vị trí 1
+2026-09-19 13:43:54 [INFO] Đã chọn File A (Insert): D:/Projects/Test/PDF_Split_01.pdf
+2026-09-19 13:43:56 [INFO] Đã chọn File B (Insert): D:/Projects/Test/PDF_Split_02.pdf
+2026-09-19 13:44:03 [INFO] Đã chèn trang 1 của File A vào File B tại vị trí 0

@@ -1,21 +1,38 @@
 """
 Giao diện tính năng Chèn File (Insert PDF) — Vishipel PDF Tools.
 
-Đã khắc phục triệt để các lỗi UI/UX:
-1. Đồng bộ khoảng cách lề và căn chỉnh Zoom ở cả Cột A và Cột B.
-2. Vạch chỉ thị màu đỏ dùng 1 Widget duy nhất (Overlay Indicator), chỉ hiển thị KHI Menu chuột phải bật.
-3. Hỗ trợ click chuột phải tại khu vực đầu trang 1 để chèn vào vị trí đầu tiên (Vạch xám nhạy chuột).
-4. Khắc phục hoàn toàn lỗi đè/đội thumbnail khi bật Context Menu.
-5. Cột B kéo dài bằng phẳng với cạnh dưới các nút bấm ở Cột A.
+Đã nối logic thật với `pdf_core.InsertSession` (04_kien_truc_module_va_flow.md,
+02_dac_ta_tinh_nang.md mục 4):
+1. Chọn File A / File B qua `pdf_core.get_page_count` để validate (hỏng/mật khẩu)
+   ngay khi chọn file — không cho file lỗi vào danh sách xử lý.
+2. Khi đã có đủ 2 file, khởi tạo `InsertSession(path_a, path_b)` — giữ bản làm việc
+   của File B trong bộ nhớ, chưa ghi ra đĩa.
+3. Cột A: chuột phải → Đánh dấu 1 trang (đúng đặc tả, tách biệt với việc click trái
+   chỉ để xem trước — trước đây UI demo nhầm dùng chung 1 biến).
+4. Cột B: chuột phải vào 1 thumbnail (hoặc vùng đầu trang) → chọn vị trí chèn → menu
+   "Chèn" gọi `session.mark_page_a` + `session.select_insert_position_b` +
+   `session.perform_insert()` — Cột B tự render lại từ bản làm việc mới nhất.
+5. Nút "Lưu File": chặn nếu còn trang A đang đánh dấu mà chưa Chèn (đúng thông báo
+   lỗi đã chốt ở 02_dac_ta_tinh_nang.md mục 4), hỏi Ghi đè/Đổi tên khác/Hủy khi trùng
+   tên (mục 6), tên gợi ý mặc định `<tenfileB>_Insert.pdf`.
+6. Đã bỏ tính năng "Undo" của bản demo cũ: không có trong đặc tả đã chốt (mục 4 chỉ
+   liệt kê 3 nút Chèn/Lưu file/Clear) và `InsertSession` không có cơ chế hoàn tác một
+   lượt chèn trên bản làm việc trong bộ nhớ — giữ lại sẽ là 1 nút không hoạt động thật.
+
+Việc render ảnh trang dùng `pdf_core.PageRenderer` (từ path, cho File A và cho File B
+TRƯỚC khi có session) và `pdf_core.render_document_page` (từ đối tượng fitz.Document
+đang mở trong bộ nhớ, dùng riêng cho Cột B SAU khi session đã tạo — xem mục 8 mới
+thêm vào pdf_core.py, không đụng gì đến PageRenderer đang dùng cho Tách file/Edit).
 """
 
 from __future__ import annotations
 
+import os
 from typing import Dict, List, Optional, Tuple
 
 import qtawesome as qta
-from PySide6.QtCore import Qt, Signal, QSize, QPoint, QEvent
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QAction
+from PySide6.QtCore import Qt, Signal, QSize, QPoint, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QAction, QPixmap, QDesktopServices
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -27,6 +44,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QFileDialog,
     QMenu,
+    QMessageBox,
 )
 
 from src.ui.vishipel_theme import (
@@ -42,12 +60,17 @@ from src.ui.vishipel_theme import (
     CONTROL_HEIGHT,
     CORNER_RADIUS,
 )
-
-# ----------------------------------------------------------------------
-# Dữ liệu giả lập (Mock Data)
-# ----------------------------------------------------------------------
-_MOCK_FILE_A = {"name": "Tai lieu 01.pdf", "pages": 12}
-_MOCK_FILE_B = {"name": "Tai lieu 02.pdf", "pages": 12}
+from src.pdf_core import (
+    get_page_count,
+    PageRenderer,
+    InsertSession,
+    render_document_page,
+    CorruptedFileError,
+    PasswordProtectedError,
+    FileLockedError,
+)
+from src.logger import log_info, log_error
+from src.undo_logic import InsertUndoManager
 
 _DROPZONE_ICON_BOX = 56
 _THUMB_STRIP_WIDTH = 115
@@ -65,6 +88,10 @@ _PREVIEW_SIDE_MARGIN = 12
 _PREVIEW_MIN_PAGE_WIDTH = 220
 _PREVIEW_PAGE_WIDTH_FALLBACK = 340
 _PREVIEW_PAGE_HEIGHT_DEFAULT = 460
+
+# Độ phân giải render — thumbnail nhỏ cho dải bên trái, ảnh lớn cho khung Preview
+_THUMB_RENDER_WIDTH = 160
+_DETAIL_RENDER_WIDTH = 760
 
 _INDICATOR_RED = COLOR_ERROR
 _INDICATOR_GRAY = "#9CA3AF"
@@ -113,6 +140,54 @@ def _zoom_button_style() -> str:
             background-color: #F3F4F6;
             border-color: {COLOR_BORDER};
         }}
+    """
+
+
+def _context_menu_qss() -> str:
+    """QSS dùng chung cho context menu của cả Cột A (Đánh dấu) và Cột B (Chèn) —
+    gộp lại 1 chỗ để không lặp lại y hệt 2 lần như bản demo cũ."""
+    return f"""
+        QMenu {{
+            background-color: white;
+            color: {COLOR_TEXT_PRIMARY};
+            border: 1px solid {COLOR_BORDER};
+            border-radius: 8px;
+            padding: 4px;
+        }}
+        QMenu::item {{
+            padding: 6px 18px 6px 12px;
+            border-radius: 4px;
+            font-size: 13px;
+            font-weight: 600;
+        }}
+        QMenu::item:selected {{
+            background-color: {COLOR_ACCENT_LIGHT};
+            color: {COLOR_ACCENT};
+        }}
+        QMenu::item:disabled {{
+            color: {COLOR_TEXT_SECONDARY};
+            background-color: transparent;
+        }}
+    """
+
+
+def _message_box_style() -> str:
+    """QSS bắt buộc cho QMessageBox theo 01_dac_ta_giao_dien.md mục 3 — không dùng
+    style mặc định vì theme nền tối của app có thể làm chữ trắng-trên-trắng."""
+    return f"""
+        QMessageBox {{ background-color: white; }}
+        QLabel {{ color: {COLOR_TEXT_PRIMARY}; font-size: 13px; background: transparent; }}
+        QPushButton {{
+            background-color: white;
+            color: {COLOR_TEXT_PRIMARY};
+            border: 1.5px solid {COLOR_BORDER_STRONG};
+            border-radius: {CORNER_RADIUS}px;
+            padding: 6px 16px;
+            font-size: 13px;
+            font-weight: 700;
+            min-width: 88px;
+        }}
+        QPushButton:hover {{ background-color: #F3F4F6; }}
     """
 
 
@@ -238,44 +313,52 @@ class _InsertPreviewThumb(QFrame):
     clicked = Signal(int)
     right_clicked = Signal(int, QPoint)
 
-    def __init__(self, page_number: int, label_text: str = "", parent: QWidget | None = None) -> None:
+    def __init__(self, page_number: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.page_number = page_number
-        self.label_text = label_text if label_text else str(page_number)
         self.is_current = False
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedSize(_THUMB_W, _THUMB_H)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(3, 3, 3, 3)
         layout.setSpacing(0)
 
-        badge_row = QHBoxLayout()
-        self.badge = QLabel(self.label_text)
-        self.badge.setMinimumWidth(_BADGE_SIZE)
-        self.badge.setFixedHeight(_BADGE_SIZE)
-        self.badge.setAlignment(Qt.AlignCenter)
-        badge_row.addWidget(self.badge)
-        badge_row.addStretch()
-        layout.addLayout(badge_row)
-        layout.addStretch()
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setScaledContents(True)
+        self.image_label.setStyleSheet("background: transparent; border: none;")
+        layout.addWidget(self.image_label, 1)
 
         self._apply_style()
+
+    def set_thumbnail(self, png_bytes: Optional[bytes]) -> None:
+        """Gán ảnh thật render từ pdf_core. Không có ảnh (lỗi render) → hiện dấu '?'."""
+        if not png_bytes:
+            self.image_label.setScaledContents(False)
+            self.image_label.setPixmap(QPixmap())
+            self.image_label.setText("?")
+            self.image_label.setStyleSheet(
+                f"color: {COLOR_TEXT_SECONDARY}; font-size: 20px; font-weight: 700; "
+                "background: transparent; border: none;"
+            )
+            return
+        pixmap = QPixmap()
+        pixmap.loadFromData(png_bytes)
+        self.image_label.setScaledContents(True)
+        self.image_label.setText("")
+        self.image_label.setStyleSheet("background: transparent; border: none;")
+        self.image_label.setPixmap(pixmap)
 
     def _apply_style(self) -> None:
         if self.is_current:
             self.setStyleSheet(
                 f"QFrame {{ background-color: {COLOR_ACCENT_LIGHT}; border: 2px solid {COLOR_ACCENT}; border-radius: 6px; }}"
             )
-            self.badge.setStyleSheet(
-                f"background-color: {COLOR_ACCENT}; color: white; font-size: 10px; font-weight: 700; "
-                f"border-radius: {_BADGE_SIZE // 2}px; border: none; padding: 0 4px;"
-            )
         else:
             self.setStyleSheet(
                 f"QFrame {{ background-color: white; border: 1px solid {COLOR_BORDER}; border-radius: 6px; }}"
             )
-            self.badge.setStyleSheet("background-color: transparent; color: transparent; border: none;")
 
     def set_current(self, current: bool) -> None:
         self.is_current = current
@@ -342,29 +425,45 @@ class _PannableScrollArea(QScrollArea):
 
 
 # ----------------------------------------------------------------------
-# Page Display
+# Page Display — hiển thị ảnh thật (thay vì số to giả lập)
 # ----------------------------------------------------------------------
 class _InsertPreviewPage(QFrame):
-    def __init__(self, display_text: str, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.display_text = display_text
         self.aspect_ratio = _PREVIEW_PAGE_HEIGHT_DEFAULT / _PREVIEW_PAGE_WIDTH_FALLBACK
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setAlignment(Qt.AlignCenter)
 
-        self.number_label = QLabel(display_text)
-        self.number_label.setAlignment(Qt.AlignCenter)
-        self.number_label.setStyleSheet(
-            f"color: {COLOR_TEXT_SECONDARY}; font-size: 48px; font-weight: 700; "
-            "background: transparent; border: none;"
-        )
-        layout.addWidget(self.number_label)
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setScaledContents(True)
+        self.image_label.setStyleSheet("background: transparent; border: none;")
+        layout.addWidget(self.image_label)
 
         self.setStyleSheet(
             f"QFrame {{ background-color: white; border: 1px solid {COLOR_BORDER}; border-radius: 6px; }}"
         )
+
+    def set_image(self, png_bytes: Optional[bytes]) -> None:
+        if not png_bytes:
+            self.image_label.setScaledContents(False)
+            self.image_label.setPixmap(QPixmap())
+            self.image_label.setText("Không thể xem trước trang này")
+            self.image_label.setStyleSheet(
+                f"color: {COLOR_TEXT_SECONDARY}; font-size: 13px; font-weight: 600; "
+                "background: transparent; border: none;"
+            )
+            return
+        pixmap = QPixmap()
+        pixmap.loadFromData(png_bytes)
+        if pixmap.width() and pixmap.height():
+            self.aspect_ratio = pixmap.height() / pixmap.width()
+        self.image_label.setScaledContents(True)
+        self.image_label.setText("")
+        self.image_label.setStyleSheet("background: transparent; border: none;")
+        self.image_label.setPixmap(pixmap)
 
 
 # ----------------------------------------------------------------------
@@ -374,13 +473,29 @@ class InsertFeatureWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
-        self._pages_a: List[str] = [str(i + 1) for i in range(_MOCK_FILE_A["pages"])]
-        self._pages_b: List[str] = [str(i + 1) for i in range(_MOCK_FILE_B["pages"])]
+        # --- Trạng thái dữ liệu thật (thay cho _pages_a/_pages_b kiểu chuỗi giả) ---
+        self._path_a: Optional[str] = None
+        self._path_b: Optional[str] = None
+        self._page_count_a: int = 0
+        self._session: Optional[InsertSession] = None
 
-        self._selected_page_a: int = 1 if self._pages_a else 0
-        self._selected_page_b: int = 1 if self._pages_b else 0
+        # Renderer cho Cột A (luôn đọc từ path_a, không đổi trong suốt phiên làm việc)
+        # và Renderer tạm cho Cột B TRƯỚC khi có session (đọc từ path_b trên đĩa).
+        # Sau khi có session, Cột B render qua render_document_page(working_document)
+        # (xem pdf_core.py mục 8) — không dùng renderer có cache vì nội dung B đổi
+        # liên tục sau mỗi lượt chèn.
+        self._renderer_a = PageRenderer()
+        self._renderer_b_static = PageRenderer()
 
-        self._history_stack: List[List[str]] = []
+        # Undo riêng cho Chèn file — xem src/undo_logic.py (không dùng chung với
+        # undo_manager.py của Edit, xem lý do ở phần đề xuất đã được đại ca xác nhận).
+        self._undo_manager = InsertUndoManager()
+
+        # Trang A đang được click chọn (Cột A không còn thao tác "Đánh dấu" riêng —
+        # click trái vừa mở preview vừa là nguồn để chèn, theo yêu cầu đại ca).
+        self._selected_page_a: int = 0
+        self._selected_page_b: int = 0
+
         self._target_insert_index_b: int = 0
 
         self._zoom_a: float = _ZOOM_DEFAULT
@@ -388,8 +503,6 @@ class InsertFeatureWidget(QWidget):
 
         self._thumbs_a: List[_InsertPreviewThumb] = []
         self._thumbs_b: List[_InsertPreviewThumb] = []
-
-        self._thumb_wrappers_b: List[QWidget] = []
 
         self._pages_widget_a: Dict[int, _InsertPreviewPage] = {}
         self._pages_widget_b: Dict[int, _InsertPreviewPage] = {}
@@ -416,8 +529,8 @@ class InsertFeatureWidget(QWidget):
         )
         self._red_indicator.hide()
 
-        self._load_file_a(_MOCK_FILE_A["name"], self._pages_a)
-        self._load_file_b(_MOCK_FILE_B["name"], self._pages_b)
+        self._load_file_a("—", 0)
+        self._refresh_column_b_display()
 
     # ------------------------------------------------------------------
     # Dựng Cột A
@@ -700,12 +813,85 @@ class InsertFeatureWidget(QWidget):
         return container, layout
 
     # ------------------------------------------------------------------
+    # Render ảnh thật — Cột A luôn từ path_a; Cột B từ path_b (trước khi có
+    # session) hoặc từ working_document của session (sau khi có session).
+    # ------------------------------------------------------------------
+    def _render_a_thumb_bytes(self, index0: int) -> Optional[bytes]:
+        if not self._path_a:
+            return None
+        try:
+            return self._renderer_a.render_thumbnail(self._path_a, index0, max_width=_THUMB_RENDER_WIDTH)
+        except (CorruptedFileError, PasswordProtectedError, FileLockedError, Exception):
+            return None
+
+    def _render_a_detail_bytes(self, index0: int) -> Optional[bytes]:
+        if not self._path_a:
+            return None
+        try:
+            return self._renderer_a.render_page_detail(self._path_a, index0, target_width=_DETAIL_RENDER_WIDTH)
+        except (CorruptedFileError, PasswordProtectedError, FileLockedError, Exception):
+            return None
+
+    def _render_b_thumb_bytes(self, index0: int) -> Optional[bytes]:
+        try:
+            if self._session is not None:
+                return render_document_page(self._session.working_document, index0, target_width=_THUMB_RENDER_WIDTH)
+            if self._path_b:
+                return self._renderer_b_static.render_thumbnail(self._path_b, index0, max_width=_THUMB_RENDER_WIDTH)
+        except Exception:
+            return None
+        return None
+
+    def _render_b_detail_bytes(self, index0: int) -> Optional[bytes]:
+        try:
+            if self._session is not None:
+                return render_document_page(self._session.working_document, index0, target_width=_DETAIL_RENDER_WIDTH)
+            if self._path_b:
+                return self._renderer_b_static.render_page_detail(self._path_b, index0, target_width=_DETAIL_RENDER_WIDTH)
+        except Exception:
+            return None
+        return None
+
+    def _current_page_count_b(self) -> int:
+        if self._session is not None:
+            return self._session.working_page_count
+        if self._path_b:
+            try:
+                return get_page_count(self._path_b)
+            except (CorruptedFileError, PasswordProtectedError):
+                return 0
+        return 0
+
+    # ------------------------------------------------------------------
+    # Quản lý InsertSession — chỉ tạo được khi đã có đủ File A + File B
+    # ------------------------------------------------------------------
+    def _rebuild_session(self) -> None:
+        if self._session is not None:
+            self._session.close()
+            self._session = None
+        # Lịch sử Undo chỉ có ý nghĩa với đúng working_document đang hoạt động —
+        # đổi File A/B (tạo session mới) coi như khởi động lại, xoá sạch lịch sử cũ.
+        self._undo_manager.clear()
+
+        if not (self._path_a and self._path_b):
+            return
+
+        try:
+            self._session = InsertSession(self._path_a, self._path_b)
+        except PasswordProtectedError:
+            self._show_error(f"File có mật khẩu, không thể mở: {os.path.basename(self._path_b)}")
+            self._path_b = None
+        except CorruptedFileError:
+            self._show_error(f"Không thể đọc file, có thể bị hỏng: {os.path.basename(self._path_b)}")
+            self._path_b = None
+
+    # ------------------------------------------------------------------
     # Render File A & File B
     # ------------------------------------------------------------------
-    def _load_file_a(self, file_name: str, pages: List[str]) -> None:
+    def _load_file_a(self, file_name: str, count: int) -> None:
         self.title_a.setText(f"Xem trước: {file_name}")
-        self._pages_a = pages
-        self._selected_page_a = 1 if pages else 0
+        self._page_count_a = count
+        self._selected_page_a = 1 if count else 0
 
         while self.thumb_layout_a.count():
             child = self.thumb_layout_a.takeAt(0)
@@ -713,7 +899,7 @@ class InsertFeatureWidget(QWidget):
                 child.widget().deleteLater()
         self._thumbs_a.clear()
 
-        for idx, page_str in enumerate(pages):
+        for idx in range(count):
             page_num = idx + 1
             wrapper = QWidget()
             w_layout = QVBoxLayout(wrapper)
@@ -721,6 +907,7 @@ class InsertFeatureWidget(QWidget):
             w_layout.setSpacing(2)
 
             thumb = _InsertPreviewThumb(page_num)
+            thumb.set_thumbnail(self._render_a_thumb_bytes(idx))
             thumb.clicked.connect(self._on_thumb_a_clicked)
             w_layout.addWidget(thumb, alignment=Qt.AlignHCenter)
 
@@ -735,26 +922,41 @@ class InsertFeatureWidget(QWidget):
             self.thumb_layout_a.addWidget(wrapper)
             self._thumbs_a.append(thumb)
 
-        for frame in self._pages_widget_a.values():
-            self.preview_layout_a.removeWidget(frame)
-            frame.deleteLater()
+        # Dồn khoảng trống dư (khi ít trang, chưa lấp đầy khung nhìn) xuống cuối cùng
+        # thay vì để Qt tự giãn đều spacing giữa các thumbnail — đây là nguyên nhân
+        # gây hiện tượng "kéo giãn" khoảng cách khi số trang ít.
+        self.thumb_layout_a.addStretch(1)
+
+        while self.preview_layout_a.count():
+            item = self.preview_layout_a.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
         self._pages_widget_a.clear()
 
-        for idx, page_str in enumerate(pages):
+        for idx in range(count):
             page_num = idx + 1
-            frame = _InsertPreviewPage(page_str)
+            frame = _InsertPreviewPage()
+            frame.set_image(self._render_a_detail_bytes(idx))
             self.preview_layout_a.addWidget(frame, alignment=Qt.AlignHCenter)
             self._pages_widget_a[page_num] = frame
+
+        self.preview_layout_a.addStretch(1)
 
         self._refresh_view_a()
         self._apply_zoom_a()
 
-    def _load_file_b(self, file_name: str, pages: List[str]) -> None:
+    def _refresh_column_b_display(self) -> None:
+        """Dựng lại toàn bộ Cột B — dùng chung cho: chọn File B lần đầu, đổi File A/B,
+        sau mỗi lượt Chèn thành công, và khi bấm Clear."""
+        name = os.path.basename(self._path_b) if self._path_b else "—"
+        count = self._current_page_count_b()
+        self._load_file_b(name, count)
+
+    def _load_file_b(self, file_name: str, count: int) -> None:
         self.title_b.setText(f"Xem trước: {file_name}")
-        self._pages_b = pages
-        if self._selected_page_b > len(pages):
-            self._selected_page_b = len(pages)
-        elif self._selected_page_b == 0 and pages:
+        if self._selected_page_b > count:
+            self._selected_page_b = count
+        elif self._selected_page_b == 0 and count:
             self._selected_page_b = 1
 
         self._hide_red_indicator()
@@ -765,21 +967,21 @@ class InsertFeatureWidget(QWidget):
                 child.widget().deleteLater()
 
         self._thumbs_b.clear()
-        self._thumb_wrappers_b.clear()
 
         # Vùng tương tác Chèn Đầu Trang (Top Zone)
         top_zone = _TopInsertZone()
         top_zone.right_clicked.connect(lambda pos: self._open_context_menu(0, pos, top_zone))
         self.thumb_layout_b.addWidget(top_zone)
 
-        for idx, page_str in enumerate(pages):
+        for idx in range(count):
             page_num = idx + 1
             wrapper = QWidget()
             w_layout = QVBoxLayout(wrapper)
             w_layout.setContentsMargins(0, 0, 0, 0)
             w_layout.setSpacing(2)
 
-            thumb = _InsertPreviewThumb(page_num, label_text=page_str)
+            thumb = _InsertPreviewThumb(page_num)
+            thumb.set_thumbnail(self._render_b_thumb_bytes(idx))
             thumb.clicked.connect(self._on_thumb_b_clicked)
             thumb.right_clicked.connect(lambda p_num, pos, w=wrapper: self._open_context_menu(p_num, pos, w))
             w_layout.addWidget(thumb, alignment=Qt.AlignHCenter)
@@ -794,18 +996,23 @@ class InsertFeatureWidget(QWidget):
 
             self.thumb_layout_b.addWidget(wrapper)
             self._thumbs_b.append(thumb)
-            self._thumb_wrappers_b.append(wrapper)
 
-        for frame in self._pages_widget_b.values():
-            self.preview_layout_b.removeWidget(frame)
-            frame.deleteLater()
+        self.thumb_layout_b.addStretch(1)
+
+        while self.preview_layout_b.count():
+            item = self.preview_layout_b.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
         self._pages_widget_b.clear()
 
-        for idx, page_str in enumerate(pages):
+        for idx in range(count):
             page_num = idx + 1
-            frame = _InsertPreviewPage(page_str)
+            frame = _InsertPreviewPage()
+            frame.set_image(self._render_b_detail_bytes(idx))
             self.preview_layout_b.addWidget(frame, alignment=Qt.AlignHCenter)
             self._pages_widget_b[page_num] = frame
+
+        self.preview_layout_b.addStretch(1)
 
         self._refresh_view_b()
         self._apply_zoom_b()
@@ -817,11 +1024,11 @@ class InsertFeatureWidget(QWidget):
         """Định vị vạch đỏ hiển thị chính xác ngay dưới thumbnail được chọn."""
         self._red_indicator.setParent(self.thumb_container_b)
         self._red_indicator.setFixedWidth(target_widget.width() - 8)
-        
+
         # Tính vị trí Y ngay bên dưới target_widget
         pos_y = target_widget.y() + target_widget.height() - 2
         pos_x = target_widget.x() + 4
-        
+
         self._red_indicator.move(pos_x, pos_y)
         self._red_indicator.raise_()
         self._red_indicator.show()
@@ -831,86 +1038,84 @@ class InsertFeatureWidget(QWidget):
             self._red_indicator.hide()
 
     def _open_context_menu(self, insert_index: int, global_pos: QPoint, target_widget: QWidget) -> None:
-        """Kích hoạt Menu chuột phải và hiển thị Vạch Đỏ."""
+        """Menu chuột phải ở Cột B — chọn vị trí chèn rồi bấm "Chèn".
+        insert_index = 0 nghĩa là chèn vào đầu file (Top Zone); insert_index = N (>0)
+        nghĩa là chèn ngay sau trang thứ N (1-based)."""
+        if self._session is None:
+            self._show_error("Vui lòng chọn đủ File A và File B trước khi thao tác!")
+            return
+
         self._target_insert_index_b = insert_index
-        
+
         if insert_index > 0:
             self._selected_page_b = insert_index
             self._refresh_view_b()
 
-        # Hiển thị vạch đỏ
         self._position_red_indicator(target_widget)
 
         context_menu = QMenu(self)
-        context_menu.setStyleSheet(
-            f"""
-            QMenu {{
-                background-color: white;
-                color: {COLOR_TEXT_PRIMARY};
-                border: 1px solid {COLOR_BORDER};
-                border-radius: 8px;
-                padding: 4px;
-            }}
-            QMenu::item {{
-                padding: 6px 18px 6px 12px;
-                border-radius: 4px;
-                font-size: 13px;
-                font-weight: 600;
-            }}
-            QMenu::item:selected {{
-                background-color: {COLOR_ACCENT_LIGHT};
-                color: {COLOR_ACCENT};
-            }}
-            QMenu::item:disabled {{
-                color: {COLOR_TEXT_SECONDARY};
-                background-color: transparent;
-            }}
-            """
-        )
+        context_menu.setStyleSheet(_context_menu_qss())
 
         insert_action = QAction(qta.icon("mdi6.file-plus-outline", color=COLOR_ACCENT), "Chèn", self)
+        insert_action.setEnabled(self._selected_page_a >= 1)
         insert_action.triggered.connect(self._execute_insert)
         context_menu.addAction(insert_action)
 
+        can_undo = self._undo_manager.can_undo()
         undo_action = QAction(
-            qta.icon("mdi6.undo-variant", color=COLOR_ACCENT if self._history_stack else COLOR_TEXT_SECONDARY),
+            qta.icon("mdi6.undo-variant", color=COLOR_ACCENT if can_undo else COLOR_TEXT_SECONDARY),
             "Undo",
             self,
         )
-        undo_action.setEnabled(bool(self._history_stack))
+        undo_action.setEnabled(can_undo)
         undo_action.triggered.connect(self._execute_undo)
         context_menu.addAction(undo_action)
 
-        # Ẩn vạch đỏ khi Menu đóng
         context_menu.aboutToHide.connect(self._hide_red_indicator)
         context_menu.exec(global_pos)
 
     # ------------------------------------------------------------------
-    # Thao tác Chèn & Undo
+    # Thao tác Chèn & Undo (gọi InsertSession + InsertUndoManager thật)
     # ------------------------------------------------------------------
     def _execute_insert(self) -> None:
-        if not self._pages_a or self._selected_page_a < 1:
+        if self._session is None:
+            self._show_error("Vui lòng chọn đủ File A và File B trước khi chèn!")
+            return
+        if self._selected_page_a < 1:
             self._show_error("Vui lòng chọn trang từ Cột A để chèn!")
             return
 
-        self._history_stack.append(list(self._pages_b))
+        source_page = self._selected_page_a
+        insert_index = self._target_insert_index_b
 
-        page_content_from_a = self._pages_a[self._selected_page_a - 1]
-        insert_pos = self._target_insert_index_b
-
-        self._pages_b.insert(insert_pos, f"A-{page_content_from_a}")
-        self._selected_page_b = insert_pos + 1
-
-        self._load_file_b(_MOCK_FILE_B["name"], self._pages_b)
-        self._show_success(f"Đã chèn thành công trang {self._selected_page_a} của File A vào vị trí {insert_pos}!")
-
-    def _execute_undo(self) -> None:
-        if not self._history_stack:
+        self._session.mark_page_a(source_page - 1)
+        self._session.select_insert_position_b(insert_index - 1)
+        try:
+            self._session.perform_insert()
+        except (ValueError, FileLockedError, CorruptedFileError) as exc:
+            self._show_error(str(exc))
+            log_error(f"Lỗi khi chèn trang {source_page} của File A vào vị trí {insert_index}: {exc}", exc)
             return
 
-        previous_state = self._history_stack.pop()
-        self._pages_b = previous_state
-        self._load_file_b(_MOCK_FILE_B["name"], self._pages_b)
+        # Trang vừa chèn nằm ở đúng index = insert_index trong working_document
+        # (vì start_at = selected_position_b + 1 = insert_index, xem pdf_core.py
+        # InsertSession.perform_insert) — dùng đúng giá trị này để Undo sau này biết
+        # xoá đúng trang.
+        self._undo_manager.register(start_index=insert_index, page_count=1)
+
+        log_info(f"Đã chèn trang {source_page} của File A vào File B tại vị trí {insert_index}")
+        self._selected_page_b = insert_index + 1
+        self._refresh_column_b_display()
+        self._show_success(f"Đã chèn thành công trang {source_page} của File A vào vị trí {insert_index}!")
+
+    def _execute_undo(self) -> None:
+        if self._session is None or not self._undo_manager.can_undo():
+            return
+        if not self._undo_manager.undo(self._session.working_document):
+            return
+
+        log_info("Đã hoàn tác (Undo) 1 lượt chèn trang ở tính năng Chèn file")
+        self._refresh_column_b_display()
         self._show_success("Đã hoàn tác (Undo) thao tác chèn trước đó.")
 
     # ------------------------------------------------------------------
@@ -945,8 +1150,8 @@ class InsertFeatureWidget(QWidget):
         if frame:
             self.preview_scroll_b.ensureWidgetVisible(frame, 0, 0)
 
-# ------------------------------------------------------------------
-    # Zoom Management (Đã khắc phục lỗi khoảng cách biên lớn)
+    # ------------------------------------------------------------------
+    # Zoom Management (giữ nguyên logic — không liên quan pdf_core)
     # ------------------------------------------------------------------
     def _set_zoom_a(self, level: float) -> None:
         clamped = max(_ZOOM_MIN, min(_ZOOM_MAX, round(level, 2)))
@@ -967,16 +1172,13 @@ class InsertFeatureWidget(QWidget):
     def _apply_zoom_a(self) -> None:
         if not self._pages_widget_a:
             return
-            
-        # Kiểm tra sự tồn tại của thanh cuộn dọc để trừ độ rộng chính xác
+
         v_bar = self.preview_scroll_a.verticalScrollBar()
         v_bar_width = v_bar.width() if v_bar.isVisible() else 0
-        
-        # Lấy chiều rộng thực tế của viewport và tính toán khoảng rộng khả dụng
+
         viewport_w = self.preview_scroll_a.viewport().width()
         usable_w = viewport_w - (_PREVIEW_SIDE_MARGIN * 2) - v_bar_width
-        
-        # Đảm bảo chiều rộng không vượt quá khung nhìn khả dụng ở tỷ lệ 100%
+
         base_w = max(_PREVIEW_MIN_PAGE_WIDTH, usable_w)
         width = round(base_w * self._zoom_a)
 
@@ -987,13 +1189,13 @@ class InsertFeatureWidget(QWidget):
     def _apply_zoom_b(self) -> None:
         if not self._pages_widget_b:
             return
-            
+
         v_bar = self.preview_scroll_b.verticalScrollBar()
         v_bar_width = v_bar.width() if v_bar.isVisible() else 0
-        
+
         viewport_w = self.preview_scroll_b.viewport().width()
         usable_w = viewport_w - (_PREVIEW_SIDE_MARGIN * 2) - v_bar_width
-        
+
         base_w = max(_PREVIEW_MIN_PAGE_WIDTH, usable_w)
         width = round(base_w * self._zoom_b)
 
@@ -1002,32 +1204,137 @@ class InsertFeatureWidget(QWidget):
             frame.setFixedSize(width, height)
 
     # ------------------------------------------------------------------
-    # Actions
+    # Actions — chọn file (validate thật qua pdf_core)
     # ------------------------------------------------------------------
     def _on_file_a_selected(self, path: str) -> None:
-        name = path.replace("\\", "/").split("/")[-1]
-        self._load_file_a(name, [str(i + 1) for i in range(10)])
+        try:
+            count = get_page_count(path)
+        except PasswordProtectedError:
+            self._show_error(f"File có mật khẩu, không thể mở: {os.path.basename(path)}")
+            return
+        except CorruptedFileError:
+            self._show_error(f"Không thể đọc file, có thể bị hỏng: {os.path.basename(path)}")
+            return
+
+        self._path_a = path
+        self._load_file_a(os.path.basename(path), count)
+        self._rebuild_session()
+        self._refresh_column_b_display()
         self._hide_result()
+        log_info(f"Đã chọn File A (Insert): {path}")
 
     def _on_file_b_selected(self, path: str) -> None:
-        name = path.replace("\\", "/").split("/")[-1]
-        self._history_stack.clear()
+        try:
+            get_page_count(path)
+        except PasswordProtectedError:
+            self._show_error(f"File có mật khẩu, không thể mở: {os.path.basename(path)}")
+            return
+        except CorruptedFileError:
+            self._show_error(f"Không thể đọc file, có thể bị hỏng: {os.path.basename(path)}")
+            return
+
+        self._path_b = path
+        self._selected_page_b = 0
         self._target_insert_index_b = 0
-        self._load_file_b(name, [str(i + 1) for i in range(10)])
+        self._rebuild_session()
+        self._refresh_column_b_display()
         self._hide_result()
+        log_info(f"Đã chọn File B (Insert): {path}")
 
     def _on_clear_clicked(self) -> None:
-        self._history_stack.clear()
+        if self._session is not None:
+            self._session.close()
+            self._session = None
+        self._path_a = None
+        self._path_b = None
+        self._renderer_a.clear_cache()
+        self._renderer_b_static.clear_cache()
+        self._undo_manager.clear()
+        self._selected_page_a = 0
+        self._selected_page_b = 0
         self._target_insert_index_b = 0
-        self._load_file_a("—", [])
-        self._load_file_b("—", [])
+        self._load_file_a("—", 0)
+        self._refresh_column_b_display()
         self._hide_result()
 
+    def _confirm_overwrite(self, path: str) -> str:
+        """Hỏi Ghi đè / Đổi tên khác / Hủy khi trùng tên file lưu kết quả
+        (02_dac_ta_tinh_nang.md mục 6). Style tường minh theo 01_dac_ta_giao_dien.md
+        mục 3 — không dùng QMessageBox mặc định."""
+        box = QMessageBox(self)
+        box.setWindowTitle("File đã tồn tại")
+        box.setIcon(QMessageBox.Warning)
+        box.setText(f"File '{os.path.basename(path)}' đã tồn tại. Bạn muốn:")
+        box.setStyleSheet(_message_box_style())
+
+        overwrite_btn = box.addButton("Ghi đè", QMessageBox.AcceptRole)
+        overwrite_btn.setStyleSheet(
+            overwrite_btn.styleSheet() + f"background-color: {COLOR_ACCENT}; color: white; border: none;"
+        )
+        rename_btn = box.addButton("Đổi tên khác", QMessageBox.ActionRole)
+        box.addButton("Hủy", QMessageBox.RejectRole)
+
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is overwrite_btn:
+            return "overwrite"
+        if clicked is rename_btn:
+            return "rename"
+        return "cancel"
+
     def _on_save_clicked(self) -> None:
-        if not self._pages_b:
-            self._show_error("Không có nội dung file B để xuất ra tài liệu mới!")
+        if self._session is None:
+            self._show_error("Vui lòng chọn đủ File A và File B trước khi lưu!")
             return
-        self._show_success(f"[Demo Giao diện] Đã xuất file thành công gồm {len(self._pages_b)} trang!")
+        if self._session.has_pending_mark():
+            self._show_error("Chưa thực hiện chèn, vui lòng bỏ đánh dấu hoặc thực hiện xong thao tác chèn")
+            return
+
+        base_name = os.path.splitext(os.path.basename(self._path_b))[0]
+        default_name = f"{base_name}_Insert.pdf"
+        start_dir = os.path.dirname(self._path_b) or ""
+
+        while True:
+            save_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Lưu file kết quả",
+                os.path.join(start_dir, default_name),
+                "PDF Files (*.pdf)",
+                options=QFileDialog.Option.DontConfirmOverwrite,
+                # Tắt hộp thoại "Confirm Save As" mặc định của hệ điều hành — app đã
+                # tự hỏi Ghi đè/Đổi tên khác/Hủy bằng QMessageBox style riêng ngay bên
+                # dưới, giữ cả 2 sẽ hiện 2 lần hỏi liên tiếp cho cùng 1 việc.
+            )
+            if not save_path:
+                return
+            if not save_path.lower().endswith(".pdf"):
+                save_path += ".pdf"
+
+            if os.path.exists(save_path):
+                choice = self._confirm_overwrite(save_path)
+                if choice == "cancel":
+                    return
+                if choice == "rename":
+                    start_dir = os.path.dirname(save_path)
+                    default_name = os.path.basename(save_path)
+                    continue
+            break
+
+        try:
+            self._session.save(save_path)
+        except FileLockedError as exc:
+            self._show_error(str(exc))
+            log_error(f"Lỗi khi lưu file Chèn: {exc}", exc)
+            return
+        except ValueError as exc:
+            self._show_error(str(exc))
+            return
+
+        log_info(f"Đã lưu file Chèn: {save_path}")
+        self._show_success(f"Đã lưu file thành công: {os.path.basename(save_path)}")
+
+        # Tự động mở thư mục chứa file kết quả (giống hành vi đã có ở Tách file).
+        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(save_path)))
 
     def showEvent(self, event) -> None:
         super().showEvent(event)

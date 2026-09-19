@@ -16,3 +16,27 @@
 2026-09-19 13:43:54 [INFO] Đã chọn File A (Insert): D:/Projects/Test/PDF_Split_01.pdf
 2026-09-19 13:43:56 [INFO] Đã chọn File B (Insert): D:/Projects/Test/PDF_Split_02.pdf
 2026-09-19 13:44:03 [INFO] Đã chèn trang 1 của File A vào File B tại vị trí 0
+2026-09-19 21:56:00 [INFO] Đã chọn File A (Insert): D:/Projects/Test file1.pdf
+2026-09-19 21:56:03 [INFO] Đã chọn File B (Insert): D:/Projects/Test file.pdf
+2026-09-19 21:56:12 [INFO] Đã chèn trang 2 của File A vào File B tại vị trí 0
+2026-09-19 21:56:16 [INFO] Đã hoàn tác (Undo) 1 lượt chèn trang ở tính năng Chèn file
+2026-09-19 21:56:20 [INFO] Đã chèn trang 2 của File A vào File B tại vị trí 1
+2026-09-19 21:56:22 [INFO] Đã hoàn tác (Undo) 1 lượt chèn trang ở tính năng Chèn file
+2026-09-19 21:56:25 [INFO] Đã chèn trang 1 của File A vào File B tại vị trí 1
+2026-09-19 21:56:27 [INFO] Đã chèn trang 1 của File A vào File B tại vị trí 4
+2026-09-19 21:56:32 [INFO] Đã chèn trang 1 của File A vào File B tại vị trí 0
+2026-09-19 21:56:45 [INFO] Đã lưu file Chèn: D:/Projects/Test file2.pdf
+2026-09-19 21:57:09 [INFO] Đã lưu file Chèn: D:/Projects/Test file2.pdf
+2026-09-19 21:57:51 [INFO] Đã chọn File A (Insert): D:/Projects/Test file.pdf
+2026-09-19 21:57:55 [INFO] Đã chọn File B (Insert): D:/Projects/Test file1.pdf
+2026-09-19 21:57:57 [INFO] Đã chèn trang 1 của File A vào File B tại vị trí 1
+2026-09-19 21:58:00 [INFO] Đã chèn trang 1 của File A vào File B tại vị trí 3
+2026-09-19 21:58:06 [INFO] Đã lưu file Chèn: D:/Projects/Test file2.pdf
+2026-09-19 21:59:07 [INFO] Đã lưu file Chèn: D:/Projects/Test file2.pdf
+2026-09-19 22:03:28 [INFO] Đã chọn File A (Insert): D:/Projects/Test file.pdf
+2026-09-19 22:03:33 [INFO] Đã chọn File B (Insert): D:/Projects/Test file1.pdf
+2026-09-19 22:03:41 [INFO] Đã chọn File A (Insert): D:/Projects/Test file.pdf
+2026-09-19 22:03:52 [INFO] Đã chọn File B (Insert): D:/Projects/Test file1.pdf
+2026-09-19 22:03:55 [INFO] Đã chèn trang 1 của File A vào File B tại vị trí 1
+2026-09-19 22:03:58 [INFO] Đã chèn trang 1 của File A vào File B tại vị trí 3
+2026-09-19 22:04:03 [INFO] Đã lưu file Chèn: D:/Projects/Test file2.pdf

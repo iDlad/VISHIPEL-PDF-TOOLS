@@ -796,3 +796,29 @@ def apply_watermark_to_pdf(path: str, output_path: str,
                 draw_image_watermark_tiled(page, image_config)
         _safe_save(doc.raw, output_path)
     return output_path
+
+
+# =============================================================================
+# 8. Hỗ trợ render riêng cho Chèn file (Insert) — CHỈ BỔ SUNG, không sửa gì ở trên.
+#    Lý do: InsertSession.working_document là 1 fitz.Document ĐANG MỞ TRONG BỘ NHỚ,
+#    chưa từng ghi ra đĩa sau mỗi lượt chèn — PageRenderer (mục 2) chỉ nhận `path: str`
+#    và luôn mở lại qua PDFDocument(path) nên KHÔNG dùng được để render bản làm việc
+#    này. Hàm này hoàn toàn mới, không đụng PageRenderer, để tuyệt đối an toàn cho
+#    Tách file / Gộp file / Edit đang phụ thuộc PageRenderer.
+# =============================================================================
+
+def render_document_page(doc: fitz.Document, page_index: int, target_width: int = 160,
+                          pending_rotation: int = 0) -> bytes:
+    """Render 1 trang thành PNG bytes trực tiếp từ 1 fitz.Document ĐÃ MỞ SẴN (không
+    qua path/PDFDocument) — dùng riêng cho insert_widget.py khi render Cột B từ
+    `InsertSession.working_document` (bản làm việc chỉ tồn tại trong bộ nhớ).
+
+    KHÔNG cache (khác PageRenderer): nội dung `doc` đổi liên tục sau mỗi lượt chèn,
+    cache theo kiểu PageRenderer (key theo path) sẽ trả nhầm ảnh cũ."""
+    page = doc[page_index]
+    if pending_rotation:
+        page.set_rotation((page.rotation + pending_rotation) % 360)
+    rect = page.rect
+    zoom = target_width / rect.width if rect.width else 1.0
+    pixmap = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+    return pixmap.tobytes("png")

@@ -341,7 +341,7 @@ class _PasswordInput(QFrame):
 
         self.edit = QLineEdit()
         self.edit.setPlaceholderText(placeholder)
-        self.edit.setEchoMode(QLineEdit.Password)
+        self.edit.setEchoMode(QLineEdit.Password) # Mặc định mã hóa mật khẩu thành dấu chấm
         self.edit.setStyleSheet(
             f"""
             QLineEdit {{
@@ -358,7 +358,8 @@ class _PasswordInput(QFrame):
         self.eye_btn = QToolButton()
         self.eye_btn.setCursor(Qt.PointingHandCursor)
         self.eye_btn.setFixedSize(_EYE_BUTTON_WIDTH, _EYE_BUTTON_HEIGHT)
-        self.eye_btn.setIcon(qta.icon("mdi6.eye-outline", color="white"))
+        # Mặc định: Mật khẩu ẩn -> Nút hiển thị MẮT NHẮM
+        self.eye_btn.setIcon(qta.icon("mdi6.eye-off-outline", color="white"))
         self.eye_btn.setIconSize(QSize(20, 20))
         self.eye_btn.setToolTip("Hiện/ẩn mật khẩu")
         self.eye_btn.setStyleSheet(
@@ -380,13 +381,15 @@ class _PasswordInput(QFrame):
         layout.addWidget(self.eye_btn)
 
     def _toggle_echo(self) -> None:
+        # Nếu đang ở chế độ ẨN (Password):
         if self.edit.echoMode() == QLineEdit.Password:
-            self.edit.setEchoMode(QLineEdit.Normal)
-            self.eye_btn.setIcon(qta.icon("mdi6.eye-off-outline", color="white"))
+            self.edit.setEchoMode(QLineEdit.Normal) # 1. Chuyển sang HIỆN mật khẩu
+            self.eye_btn.setIcon(qta.icon("mdi6.eye-outline", color="white")) # 2. Đổi icon sang MẮT MỞ
+        # Nếu đang ở chế độ HIỆN (Normal):
         else:
-            self.edit.setEchoMode(QLineEdit.Password)
-            self.eye_btn.setIcon(qta.icon("mdi6.eye-outline", color="white"))
-
+            self.edit.setEchoMode(QLineEdit.Password) # 1. Chuyển sang ẨN mật khẩu (dấu chấm)
+            self.eye_btn.setIcon(qta.icon("mdi6.eye-off-outline", color="white")) # 2. Đổi icon sang MẮT NHẮM
+            
     def text(self) -> str:
         return self.edit.text()
 
@@ -468,18 +471,18 @@ class _ToggleCheck(QToolButton):
         self.setChecked(checked)
         self.setCursor(Qt.PointingHandCursor)
         self.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.setIconSize(QSize(20, 20))
-        self.setText(f"  {label}")
-        self.setStyleSheet("QToolButton { border: none; background: transparent; }")
+        self.setIconSize(QSize(22, 22))
+        self.setText(f" {label}")
         self._label_color = COLOR_TEXT_PRIMARY
         self._refresh_icon()
 
     def _refresh_icon(self) -> None:
+        # SỬA: Sử dụng icon ô checkbox rõ ràng thay vì làm trong suốt icon
         if self.isChecked():
-            self.setIcon(qta.icon("mdi6.check", color="white"))
+            self.setIcon(qta.icon("mdi6.checkbox-marked", color=COLOR_ACCENT))
         else:
-            self.setIcon(qta.icon("mdi6.check", color="transparent"))
-        # Màu chữ label đi kèm.
+            self.setIcon(qta.icon("mdi6.checkbox-blank-outline", color=COLOR_BORDER_STRONG))
+
         self.setStyleSheet(
             f"""
             QToolButton {{
@@ -492,7 +495,7 @@ class _ToggleCheck(QToolButton):
             """
         )
 
-    def nextCheckState(self) -> None:  # noqa: N802 - Qt API
+    def nextCheckState(self) -> None:
         super().nextCheckState()
         self._refresh_icon()
 
@@ -539,12 +542,27 @@ class _AdvancedOptions(QFrame):
             self.checks.append(check)
 
         # Chip "Mã hóa AES 256-bit".
-        chip = QLabel("  Mã hóa AES 256-bit")
-        chip.setPixmap(qta.icon("mdi6.shield-check-outline", color=COLOR_TEXT_PRIMARY).pixmap(QSize(16, 16)))
+        chip = QFrame()
         chip.setStyleSheet(
-            f"background-color: {_CHIP_BG}; color: {COLOR_TEXT_PRIMARY}; font-size: 13px; "
-            "font-weight: 600; border-radius: 12px; padding: 6px 12px; border: none;"
+            f"QFrame {{ background-color: {_CHIP_BG}; border-radius: 12px; border: none; }}"
         )
+        chip_layout = QHBoxLayout(chip)
+        chip_layout.setContentsMargins(12, 6, 12, 6)
+        chip_layout.setSpacing(8)
+        chip_layout.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        chip_icon = QLabel()
+        chip_icon.setPixmap(qta.icon("mdi6.shield-check-outline", color=COLOR_TEXT_PRIMARY).pixmap(QSize(16, 16)))
+        chip_icon.setStyleSheet("background: transparent; border: none;")
+        chip_layout.addWidget(chip_icon)
+
+        chip_text = QLabel("Mã hóa AES 256-bit")
+        chip_text.setStyleSheet(
+            f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; font-weight: 700; "
+            "background: transparent; border: none;"
+        )
+        chip_layout.addWidget(chip_text)
+
         layout.addWidget(chip)
 
         # Banner cảnh báo (nền cam nhạt, viền cam).

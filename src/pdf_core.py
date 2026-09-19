@@ -360,6 +360,36 @@ class PageEditSession:
         self._rotations = {i: 0 for i in range(self._original_count)}
         self._marked.clear()
 
+    # ------------------------------------------------------------------
+    # BỔ SUNG THUẦN MỚI (không sửa bất kỳ dòng nào ở trên) — phục vụ Undo/Redo
+    # thật của Edit khi nối `src/undo_manager.py`. Lý do cần thêm 2 method này:
+    # `reorder()` ở trên CHỈ chấp nhận `new_order` là hoán vị của thứ tự ĐANG hiển
+    # thị hiện tại, nên không thể dùng để khôi phục lại 1 trang đã bị Xóa (vì
+    # `delete_marked()` đã loại hẳn khỏi self._order — không còn nằm trong "thứ tự
+    # đang hiển thị" để mà hoán vị nữa). Undo sau thao tác Xóa cần ghi đè THẲNG toàn
+    # bộ trạng thái (order/rotations/marked) về đúng 1 snapshot đã tồn tại trước đó
+    # — đây là việc `reorder()`/`toggle_mark()`/... không làm được, không phải do
+    # chúng sai, mà do đúng bản chất khác nhau (sửa 1 phần theo luật nghiệp vụ, so
+    # với ghi đè toàn bộ không validate).
+    # ------------------------------------------------------------------
+    def snapshot(self) -> dict:
+        """Chụp lại toàn bộ trạng thái hiện tại (thứ tự, góc xoay tạm mọi trang gốc,
+        tập hợp đang đánh dấu xóa) — `UndoManager` (src/undo_manager.py) lưu lại
+        đúng dữ liệu này sau mỗi thao tác Move/Xoay/Xóa hoàn tất."""
+        return {
+            "order": list(self._order),
+            "rotations": dict(self._rotations),
+            "marked": set(self._marked),
+        }
+
+    def restore(self, snapshot: dict) -> None:
+        """Ghi đè toàn bộ trạng thái về đúng 1 snapshot đã chụp trước đó (dùng khi
+        Undo/Redo). Không validate gì thêm vì snapshot truyền vào luôn là 1 trạng
+        thái hợp lệ đã từng tồn tại thật (do chính snapshot() ở trên tạo ra)."""
+        self._order = list(snapshot["order"])
+        self._rotations = dict(snapshot["rotations"])
+        self._marked = set(snapshot["marked"])
+
 
 class InsertSession:
     """Giữ 1 bản làm việc (working copy, trong bộ nhớ) của file B — được chèn dần qua

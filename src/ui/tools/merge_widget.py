@@ -1,38 +1,48 @@
 """
-Giao diện tính năng Gộp File (Merge) — Đã điều chỉnh theo yêu cầu UI/UX.
+Giao diện tính năng Gộp File (Merge) — đã nối logic thật với src/pdf_core.py
+(Nhóm A dùng chung: PDFDocument/CorruptedFileError/PasswordProtectedError/
+FileLockedError, get_page_count, list_page_infos, PageRenderer, merge_pdfs —
+không sửa gì trong pdf_core.py).
 
-Cột B: khung xem trước lớn giờ là 1 khung cuộn liên tục nhiều trang (giống Cột B
+Cột B: khung xem trước lớn là 1 khung cuộn liên tục nhiều trang (giống Cột B
 của tính năng Tách file) — cuộn chuột bình thường để xem, kéo chuột trái để pan
 khi đã zoom to hơn khung. Click 1 thumbnail ở dải trái sẽ cuộn khung lớn tới đúng
 trang đó (đồng bộ 1 chiều: click thumbnail → cuộn khung lớn; cuộn tay tự do không
 đồng bộ ngược lại dải thumbnail). Zoom In/Out ±15% (50%-200%) đặt cùng hàng tiêu đề.
+Ảnh thumbnail/trang render nền qua QThread (_MergePreviewWorker), không chặn UI.
 
 Cột A: vạch chỉ vị trí kéo-thả file (sắp xếp danh sách) màu đỏ, có vùng đệm quanh
-tâm mỗi dòng để tránh nhấp nháy khi rê chuột nhẹ quanh điểm giữa.
+tâm mỗi dòng để tránh nhấp nháy khi rê chuột nhẹ quanh điểm giữa. Có ô nhập tên
+file kết quả (gợi ý sẵn PDF_Merger.pdf) — bấm "Gộp File" sẽ hỏi thư mục lưu, kiểm
+tra trùng tên (Ghi đè / Đổi tên khác / Hủy) rồi gọi merge_pdfs().
 
 Khung trang trong Cột B không highlight viền cam khi "đang chọn" — giữ nguyên 1
 kiểu hiển thị, không cần trạng thái hover/current riêng cho nội dung preview.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+import os
+from typing import Dict, List, Optional, Tuple
 
 import qtawesome as qta
-from PySide6.QtCore import Qt, Signal, QSize, QPoint
-from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtCore import Qt, Signal, QSize, QPoint, QThread, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPixmap, QDesktopServices
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QToolButton,
     QScrollArea,
     QFrame,
     QFileDialog,
+    QInputDialog,
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QMessageBox,
     QAbstractItemView,
 )
 
@@ -50,17 +60,30 @@ from src.ui.vishipel_theme import (
     CORNER_RADIUS,
 )
 
+# Nhóm A (dùng chung với Tách file) — chỉ IMPORT, không sửa nội dung pdf_core.py.
+from src.pdf_core import (
+    CorruptedFileError,
+    PasswordProtectedError,
+    FileLockedError,
+    PageInfo,
+    get_page_count,
+    list_page_infos,
+    PageRenderer,
+    merge_pdfs,
+)
+
 # ----------------------------------------------------------------------
-# Dữ liệu giả để dựng giao diện
+# Hằng số nghiệp vụ
 # ----------------------------------------------------------------------
-_MOCK_FILES = [
-    {"name": "Tai lieu 01.pdf", "size": "2.4 MB", "pages": 12},
-    {"name": "Tai lieu 02.pdf", "size": "1.8 MB", "pages": 8},
-    {"name": "Tai lieu 03.pdf", "size": "3.2 MB", "pages": 15},
-    {"name": "Tai lieu 04.pdf", "size": "956 KB", "pages": 6},
-    {"name": "Tai lieu 05.pdf", "size": "1.6 MB", "pages": 10},
-]
-_MOCK_PAGES_FOR_NEW_FILE = 5
+# Tên file gợi ý mặc định (02_dac_ta_tinh_nang.md mục 2) — vẫn cho sửa qua ô nhập.
+_DEFAULT_OUTPUT_NAME = "PDF_Merger.pdf"
+
+# Render thumbnail ở độ phân giải cao hơn kích thước hiển thị (72px) để nét khi
+# hiển thị trên màn hình mật độ điểm ảnh cao.
+_THUMB_RENDER_WIDTH = 220
+# Render khung xem trước lớn 1 lần ở độ phân giải cao, tái sử dụng khi Zoom
+# (setFixedSize co giãn khung chứa, không cần render lại mỗi lần bấm Zoom).
+_DETAIL_RENDER_WIDTH = 1200
 
 _ROW_ICON_SIZE = 34
 _HANDLE_ICON_SIZE = 18
@@ -70,6 +93,9 @@ _DROPZONE_ICON_BOX = 56
 # Đã thu nhỏ thumbnail để dành diện tích cho xem trước
 _THUMB_STRIP_WIDTH = 115
 _THUMB_W, _THUMB_H = 72, 94
+# Khoảng thụt vào giữa ảnh thumbnail và mép frame — chừa chỗ cho viền/màu nền
+# accent khi "đang chọn" hiển thị rõ (xem _PreviewThumb).
+_THUMB_BORDER_INSET = 3
 _BADGE_SIZE = 18
 _DRAG_THRESHOLD = 8
 # Đường kẻ báo vị trí sẽ chèn file khi kéo-thả (kiểu PowerPoint) — màu đỏ để tách
@@ -92,8 +118,8 @@ _ZOOM_DEFAULT = 1.0
 # Lề trái/phải giữa nội dung preview và biên khung Cột B.
 _PREVIEW_SIDE_MARGIN = 12
 _PREVIEW_MIN_PAGE_WIDTH = 220
-# Tỉ lệ khung hình dự phòng cho khung trang placeholder (mock — Merge chưa nối
-# pdf_core thật nên chưa có kích thước trang thực tế).
+# Tỉ lệ khung hình dự phòng — chỉ dùng khi không đọc được kích thước trang thật
+# (VD lỗi đọc file khi build khung rỗng trước lúc render).
 _PREVIEW_PAGE_WIDTH_FALLBACK = 340
 _PREVIEW_PAGE_HEIGHT_DEFAULT = 460
 
@@ -129,6 +155,18 @@ def _parse_size_to_mb(size_text: str) -> float:
         return value / 1024 if unit.upper() == "KB" else value
     except (ValueError, AttributeError):
         return 0.0
+
+
+def _format_file_size(num_bytes: int) -> str:
+    """Đổi dung lượng byte thật của file (os.path.getsize) sang chuỗi hiển thị,
+    cùng định dạng với _parse_size_to_mb ở trên (VD "2.4 MB", "956 KB")."""
+    if num_bytes >= 1024 * 1024:
+        return f"{num_bytes / (1024 * 1024):.1f} MB"
+    return f"{max(1, round(num_bytes / 1024))} KB"
+
+
+def _ensure_pdf_extension(name: str) -> str:
+    return name if name.lower().endswith(".pdf") else f"{name}.pdf"
 
 
 def _zoom_button_style() -> str:
@@ -368,8 +406,10 @@ class _FileRow(QFrame):
     clicked = Signal()
     remove_requested = Signal()
 
-    def __init__(self, name: str, size_text: str, pages: int, parent: QWidget | None = None) -> None:
+    def __init__(self, path: str, name: str, size_text: str, pages: int,
+                 parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.path = path
         self.name = name
         self.size_text = size_text
         self.pages = pages
@@ -554,6 +594,19 @@ class _PreviewThumb(QFrame):
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedSize(_THUMB_W, _THUMB_H)
 
+        # Ảnh thumbnail thật — đặt làm nền, nằm dưới badge số trang. Thụt vào so
+        # với mép frame (không phủ kín 0,0→W,H) để viền + màu nền accent khi
+        # "đang chọn" (_apply_style) vẫn hiển thị được, không bị ảnh đè mất.
+        inset = _THUMB_BORDER_INSET
+        self.image_label = QLabel(self)
+        self.image_label.setGeometry(
+            inset, inset, _THUMB_W - inset * 2, _THUMB_H - inset * 2
+        )
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setScaledContents(True)
+        self.image_label.setStyleSheet("background: transparent; border: none;")
+        self.image_label.lower()
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(0)
@@ -568,6 +621,9 @@ class _PreviewThumb(QFrame):
         layout.addStretch()
 
         self._apply_style()
+
+    def set_image(self, pixmap: QPixmap) -> None:
+        self.image_label.setPixmap(pixmap)
 
     def _apply_style(self) -> None:
         if self.is_current:
@@ -649,34 +705,87 @@ class _PannablePreviewScrollArea(QScrollArea):
 
 
 # ----------------------------------------------------------------------
-# Cột B — 1 trang placeholder trong khung xem trước lớn (mock, chưa nối pdf_core)
+# Cột B — 1 trang trong khung xem trước lớn, hiển thị ảnh trang PDF thật
 # ----------------------------------------------------------------------
 class _MergePreviewPage(QFrame):
-    """1 khung trang trong danh sách cuộn liên tục bên phải — hiện số trang to
-    (placeholder, vì Merge chưa nối logic render PDF thật). Không highlight viền
-    cam khi "đang chọn" (khác với dải thumbnail trái) — theo yêu cầu, nội dung
-    preview giữ nguyên 1 kiểu, không cần trạng thái hover/current riêng."""
+    """1 khung trang trong danh sách cuộn liên tục bên phải — hiển thị ảnh trang
+    thật (render nền qua PageRenderer). Không highlight viền cam khi "đang chọn"
+    (khác với dải thumbnail trái) — nội dung preview giữ nguyên 1 kiểu, không cần
+    trạng thái hover/current riêng."""
 
-    def __init__(self, page_number: int, parent: QWidget | None = None) -> None:
+    def __init__(self, page_number: int, aspect_ratio: float,
+                 parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.page_number = page_number
-        self.aspect_ratio = _PREVIEW_PAGE_HEIGHT_DEFAULT / _PREVIEW_PAGE_WIDTH_FALLBACK
+        self.aspect_ratio = aspect_ratio
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setAlignment(Qt.AlignCenter)
 
-        self.number_label = QLabel(str(page_number))
-        self.number_label.setAlignment(Qt.AlignCenter)
-        self.number_label.setStyleSheet(
-            f"color: {COLOR_TEXT_SECONDARY}; font-size: 48px; font-weight: 700; "
-            "background: transparent; border: none;"
-        )
-        layout.addWidget(self.number_label)
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setScaledContents(True)
+        self.image_label.setStyleSheet("background: transparent; border: none;")
+        layout.addWidget(self.image_label)
 
         self.setStyleSheet(
             f"QFrame {{ background-color: white; border: 1px solid {COLOR_BORDER}; border-radius: 6px; }}"
         )
+
+    def set_image(self, pixmap: QPixmap) -> None:
+        self.image_label.setPixmap(pixmap)
+
+
+# ----------------------------------------------------------------------
+# Worker render nền cho Cột B — theo đúng luồng đã chốt ở
+# 04_kien_truc_module_va_flow.md mục 5: list_page_infos đọc metadata đồng bộ để
+# dựng khung trước, ảnh thật (thumbnail + trang lớn) render nền qua QThread để
+# không chặn UI. Chỉ dùng PageRenderer sẵn có của pdf_core (Nhóm A), không sửa gì.
+# ----------------------------------------------------------------------
+class _MergePreviewWorker(QThread):
+    thumb_ready = Signal(int, int, bytes)   # token, page_index (0-based), PNG bytes
+    page_ready = Signal(int, int, bytes)    # token, page_index (0-based), PNG bytes
+    render_error = Signal(int, str)         # token, message
+
+    def __init__(self, token: int, path: str, page_indexes: List[int],
+                 renderer: PageRenderer, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.token = token
+        self.path = path
+        self.page_indexes = page_indexes
+        self.renderer = renderer
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    def run(self) -> None:
+        for page_index in self.page_indexes:
+            if self._cancelled:
+                return
+            try:
+                thumb_bytes = self.renderer.render_thumbnail(
+                    self.path, page_index, max_width=_THUMB_RENDER_WIDTH
+                )
+                self.thumb_ready.emit(self.token, page_index, thumb_bytes)
+            except (CorruptedFileError, PasswordProtectedError, FileLockedError) as exc:
+                self.render_error.emit(self.token, str(exc))
+                return
+            except Exception:
+                # Lỗi render 1 trang lẻ (hiếm) — bỏ qua trang đó, không dừng cả
+                # tiến trình render các trang còn lại.
+                pass
+
+            if self._cancelled:
+                return
+            try:
+                page_bytes = self.renderer.render_page_detail(
+                    self.path, page_index, target_width=_DETAIL_RENDER_WIDTH
+                )
+                self.page_ready.emit(self.token, page_index, page_bytes)
+            except Exception:
+                pass
 
 
 # ----------------------------------------------------------------------
@@ -688,6 +797,7 @@ class MergeFeatureWidget(QWidget):
 
         self._selected_row: Optional[_FileRow] = None
         self._current_file_name: Optional[str] = None
+        self._current_file_path: Optional[str] = None
         self._current_total_pages = 0
         self._current_page = 0
         self._preview_thumbs: List[_PreviewThumb] = []
@@ -696,10 +806,19 @@ class MergeFeatureWidget(QWidget):
         self._preview_pages: Dict[int, _MergePreviewPage] = {}
         self._zoom_level: float = _ZOOM_DEFAULT
         self._current_preview_width: Optional[int] = None
-        # Trang mock được dựng ngay trong __init__ (trước khi cửa sổ hiển thị xong),
+        # Trang được dựng ngay trong __init__ (trước khi cửa sổ hiển thị xong),
         # lúc đó viewport().width() đọc được còn sai (quá nhỏ) nên chiều rộng trang
         # bị tính sai theo → cần tính lại đúng 1 lần khi widget thật sự hiển thị.
         self._initial_width_applied = False
+
+        # Render nền cho Cột B (xem 04_kien_truc_module_va_flow.md mục 5).
+        self._renderer = PageRenderer()
+        self._render_worker: Optional[_MergePreviewWorker] = None
+        self._render_token = 0
+
+        # Lưu lại lần gộp gần nhất để nút "Thử lại" (lỗi FileLockedError) không
+        # phải bắt người dùng chọn lại thư mục/tên file từ đầu.
+        self._last_merge_attempt: Optional[Tuple[List[str], str]] = None
 
         root_layout = QHBoxLayout(self)
         root_layout.setContentsMargins(28, 24, 28, 24)
@@ -788,6 +907,37 @@ class MergeFeatureWidget(QWidget):
 
         column_a.addWidget(list_card, 1)
 
+        # --- A3: Tên file kết quả (đã chốt ở 02_dac_ta_tinh_nang.md mục 2 —
+        # gợi ý sẵn "PDF_Merger.pdf", người dùng sửa được) ---
+        name_block = QVBoxLayout()
+        name_block.setSpacing(6)
+
+        name_label = QLabel("Tên file kết quả")
+        name_label.setStyleSheet(
+            f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; font-weight: 700; "
+            "background: transparent; border: none;"
+        )
+        name_block.addWidget(name_label)
+
+        self.output_name_edit = QLineEdit(_DEFAULT_OUTPUT_NAME)
+        self.output_name_edit.setFixedHeight(CONTROL_HEIGHT)
+        self.output_name_edit.setStyleSheet(
+            f"""
+            QLineEdit {{
+                background-color: white;
+                color: {COLOR_TEXT_PRIMARY};
+                border: 1.5px solid {COLOR_BORDER_STRONG};
+                border-radius: {CORNER_RADIUS}px;
+                padding: 0 12px;
+                font-size: 13px;
+            }}
+            QLineEdit:focus {{ border-color: {COLOR_ACCENT}; }}
+            """
+        )
+        name_block.addWidget(self.output_name_edit)
+
+        column_a.addLayout(name_block)
+
         # --- A4: Hàng nút bấm ---
         bottom_row = QHBoxLayout()
         bottom_row.setSpacing(10)
@@ -841,11 +991,40 @@ class MergeFeatureWidget(QWidget):
         bottom_row.addStretch()
         column_a.addLayout(bottom_row)
 
+        result_row = QHBoxLayout()
+        result_row.setSpacing(8)
+
         self.result_label = QLabel("")
         self.result_label.setWordWrap(True)
         self.result_label.setStyleSheet("font-size: 12px;")
         self.result_label.hide()
-        column_a.addWidget(self.result_label)
+        result_row.addWidget(self.result_label, 1)
+
+        # Nút "Thử lại" — chỉ hiện khi lỗi ghi file do bị khóa bởi chương trình
+        # khác (02_dac_ta_tinh_nang.md mục 6), bấm để ghi lại đúng file/thư mục
+        # vừa chọn mà không bắt chọn lại từ đầu.
+        self.retry_button = QPushButton("Thử lại")
+        self.retry_button.setCursor(Qt.PointingHandCursor)
+        self.retry_button.setFixedHeight(28)
+        self.retry_button.setStyleSheet(
+            f"""
+            QPushButton {{
+                background-color: {COLOR_ACCENT};
+                color: white;
+                border: none;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: 700;
+                padding: 0 12px;
+            }}
+            QPushButton:hover {{ background-color: #E28104; }}
+            """
+        )
+        self.retry_button.clicked.connect(self._retry_last_merge)
+        self.retry_button.hide()
+        result_row.addWidget(self.retry_button)
+
+        column_a.addLayout(result_row)
 
         # ================= CỘT B (50%) — Xem trước =================
         column_b = QVBoxLayout()
@@ -963,8 +1142,6 @@ class MergeFeatureWidget(QWidget):
         root_layout.addWidget(column_a_widget, 40)
         root_layout.addWidget(column_b_widget, 60)
 
-        for f in _MOCK_FILES:
-            self._add_file_row(f["name"], f["size"], f["pages"])
         self._select_first_available()
         self._update_zoom_buttons_state()
         self._update_zoom_percent_label()
@@ -973,9 +1150,10 @@ class MergeFeatureWidget(QWidget):
     # Quản lý danh sách file
     # ------------------------------------------------------------------
     def _add_file_row(
-        self, name: str, size_text: str, pages: int, index: Optional[int] = None
+        self, path: str, name: str, size_text: str, pages: int,
+        index: Optional[int] = None
     ) -> _FileRow:
-        row = _FileRow(name, size_text, pages)
+        row = _FileRow(path, name, size_text, pages)
         item = QListWidgetItem()
         item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
         
@@ -1027,7 +1205,9 @@ class MergeFeatureWidget(QWidget):
         if old_row is None:
             return
 
-        name, size_text, pages = old_row.name, old_row.size_text, old_row.pages
+        path, name, size_text, pages = (
+            old_row.path, old_row.name, old_row.size_text, old_row.pages
+        )
         was_selected = old_row is self._selected_row
         if was_selected:
             self._selected_row = None
@@ -1035,7 +1215,7 @@ class MergeFeatureWidget(QWidget):
         self.file_list.takeItem(from_index)
 
         target_index = max(0, min(to_index, self.file_list.count()))
-        new_row = self._add_file_row(name, size_text, pages, index=target_index)
+        new_row = self._add_file_row(path, name, size_text, pages, index=target_index)
 
         if was_selected:
             self._select_row(new_row)
@@ -1052,6 +1232,7 @@ class MergeFeatureWidget(QWidget):
     def _sort_files(self, key: str) -> None:
         rows_data = [
             (
+                self.file_list.itemWidget(self.file_list.item(i)).path,
                 self.file_list.itemWidget(self.file_list.item(i)).name,
                 self.file_list.itemWidget(self.file_list.item(i)).size_text,
                 self.file_list.itemWidget(self.file_list.item(i)).pages,
@@ -1059,18 +1240,20 @@ class MergeFeatureWidget(QWidget):
             for i in range(self.file_list.count())
         ]
         if key == "name":
-            rows_data.sort(key=lambda r: r[0].lower())
+            rows_data.sort(key=lambda r: r[1].lower())
         elif key == "size":
-            rows_data.sort(key=lambda r: _parse_size_to_mb(r[1]), reverse=True)
+            rows_data.sort(key=lambda r: _parse_size_to_mb(r[2]), reverse=True)
         elif key == "pages":
-            rows_data.sort(key=lambda r: r[2], reverse=True)
+            rows_data.sort(key=lambda r: r[3], reverse=True)
 
-        selected_name = self._selected_row.name if self._selected_row else None
+        # Dùng path (không dùng name) để chọn lại đúng file sau khi sắp xếp —
+        # tránh nhầm khi 2 file trùng tên nhưng khác thư mục nguồn.
+        selected_path = self._selected_row.path if self._selected_row else None
         self.file_list.clear()
         self._selected_row = None
-        for name, size_text, pages in rows_data:
-            new_row = self._add_file_row(name, size_text, pages)
-            if name == selected_name:
+        for path, name, size_text, pages in rows_data:
+            new_row = self._add_file_row(path, name, size_text, pages)
+            if path == selected_path:
                 self._select_row(new_row)
         if self._selected_row is None:
             self._select_first_available()
@@ -1079,16 +1262,44 @@ class MergeFeatureWidget(QWidget):
     # Sự kiện
     # ------------------------------------------------------------------
     def _on_files_selected(self, paths: List[str]) -> None:
+        # Theo 02_dac_ta_tinh_nang.md mục 6: file hỏng/có mật khẩu bị loại khỏi
+        # danh sách, báo lỗi rõ ràng, không crash, vẫn thêm tiếp các file hợp lệ.
+        skipped: List[str] = []
         for path in paths:
-            name = path.replace("\\", "/").split("/")[-1]
-            self._add_file_row(name, "-- MB", _MOCK_PAGES_FOR_NEW_FILE)
+            name = os.path.basename(path)
+            try:
+                pages = get_page_count(path)
+            except PasswordProtectedError:
+                skipped.append(f"{name} (có mật khẩu)")
+                continue
+            except CorruptedFileError:
+                skipped.append(f"{name} (không đọc được, file có thể bị hỏng)")
+                continue
+            except Exception as exc:
+                skipped.append(f"{name} ({exc})")
+                continue
+
+            try:
+                size_text = _format_file_size(os.path.getsize(path))
+            except OSError:
+                size_text = "--"
+
+            self._add_file_row(path, name, size_text, pages)
+
         if self._selected_row is None:
             self._select_first_available()
-        self._hide_result()
+
+        if skipped:
+            self._show_error(
+                f"Không thể thêm {len(skipped)} file: " + "; ".join(skipped)
+            )
+        else:
+            self._hide_result()
 
     def _on_clear_clicked(self) -> None:
         self.file_list.clear()
         self._selected_row = None
+        self._last_merge_attempt = None
         self._update_header_count()
         self._zoom_level = _ZOOM_DEFAULT
         self._show_empty_preview()
@@ -1100,10 +1311,151 @@ class MergeFeatureWidget(QWidget):
         if count < 2:
             self._show_error("Vui lòng chọn ít nhất 2 file PDF để gộp.")
             return
-        order = [
-            self.file_list.itemWidget(self.file_list.item(i)).name for i in range(count)
+
+        ordered_paths = [
+            self.file_list.itemWidget(self.file_list.item(i)).path
+            for i in range(count)
         ]
-        self._show_success(f"[Demo giao diện] Sẽ gộp {count} file theo thứ tự: {', '.join(order)} — chưa xử lý PDF thật.")
+
+        output_name = _ensure_pdf_extension(
+            self.output_name_edit.text().strip() or _DEFAULT_OUTPUT_NAME
+        )
+
+        # Theo 02_dac_ta_tinh_nang.md mục 0: người dùng tự chọn thư mục lưu,
+        # không mặc định cứng.
+        output_dir = QFileDialog.getExistingDirectory(self, "Chọn thư mục lưu kết quả")
+        if not output_dir:
+            return
+
+        output_path = os.path.join(output_dir, output_name)
+
+        if os.path.exists(output_path):
+            decision = self._ask_overwrite_decision(output_name)
+            if decision == "cancel":
+                return
+            if decision == "rename":
+                new_name_raw, ok = self._prompt_new_name(output_name)
+                if not ok or not new_name_raw.strip():
+                    return
+                new_name = _ensure_pdf_extension(new_name_raw.strip())
+                output_path = os.path.join(output_dir, new_name)
+                if os.path.exists(output_path):
+                    self._show_error(
+                        f"Tên '{new_name}' cũng đã tồn tại trong thư mục này. "
+                        "Vui lòng bấm Gộp File lại và chọn tên khác."
+                    )
+                    return
+            # decision == "overwrite": giữ nguyên output_path, ghi đè khi lưu.
+
+        self._write_merged_file(ordered_paths, output_path)
+
+    def _write_merged_file(self, ordered_paths: List[str], output_path: str) -> None:
+        self._last_merge_attempt = (ordered_paths, output_path)
+        try:
+            merge_pdfs(ordered_paths, output_path)
+        except FileLockedError:
+            self._show_error(
+                "File đang được sử dụng bởi chương trình khác, vui lòng đóng và thử lại.",
+                retryable=True,
+            )
+            return
+        except (CorruptedFileError, PasswordProtectedError) as exc:
+            self._show_error(f"Không thể gộp file: {exc}")
+            return
+        except Exception as exc:
+            self._show_error(f"Lỗi không xác định khi gộp file: {exc}")
+            return
+
+        self._last_merge_attempt = None
+        self._show_success(f"Đã gộp {len(ordered_paths)} file thành công → {output_path}")
+        # Tự động mở thư mục kết quả (Windows Explorer) — đồng bộ hành vi với
+        # tính năng Tách file (04_kien_truc_module_va_flow.md mục 5).
+        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(output_path)))
+
+    def _retry_last_merge(self) -> None:
+        if self._last_merge_attempt is None:
+            return
+        ordered_paths, output_path = self._last_merge_attempt
+        self._write_merged_file(ordered_paths, output_path)
+
+    def _ask_overwrite_decision(self, file_name: str) -> str:
+        """Popup style riêng (không dùng mặc định) theo 01_dac_ta_giao_dien.md
+        mục 3: nền trắng, chữ tối màu, nút Accent cho hành động chính. 3 lựa chọn
+        theo 02_dac_ta_tinh_nang.md mục 6: Ghi đè / Đổi tên khác / Hủy."""
+        box = QMessageBox(self)
+        box.setWindowTitle("Trùng tên file")
+        box.setIcon(QMessageBox.Warning)
+        box.setText(
+            f"File '{file_name}' đã tồn tại trong thư mục đã chọn.\nBạn muốn làm gì?"
+        )
+        box.setStyleSheet(
+            f"""
+            QMessageBox {{ background-color: white; }}
+            QMessageBox QLabel {{ color: {COLOR_TEXT_PRIMARY}; font-size: 13px; }}
+            QPushButton {{
+                background-color: white;
+                color: {COLOR_TEXT_PRIMARY};
+                border: 1.5px solid {COLOR_BORDER_STRONG};
+                border-radius: {CORNER_RADIUS}px;
+                padding: 6px 14px;
+                font-size: 13px;
+                font-weight: 600;
+                min-width: 96px;
+            }}
+            QPushButton:hover {{ background-color: #F3F4F6; }}
+            """
+        )
+
+        overwrite_btn = box.addButton("Ghi đè", QMessageBox.AcceptRole)
+        overwrite_btn.setStyleSheet(
+            f"background-color: {COLOR_ACCENT}; color: white; border: none; "
+            f"border-radius: {CORNER_RADIUS}px; padding: 6px 14px; font-size: 13px; "
+            "font-weight: 700; min-width: 96px;"
+        )
+        rename_btn = box.addButton("Đổi tên khác", QMessageBox.ActionRole)
+        box.addButton("Hủy", QMessageBox.RejectRole)
+        box.setDefaultButton(overwrite_btn)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked is overwrite_btn:
+            return "overwrite"
+        if clicked is rename_btn:
+            return "rename"
+        return "cancel"
+
+    def _prompt_new_name(self, current_name: str) -> Tuple[str, bool]:
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("Đổi tên file kết quả")
+        dialog.setLabelText("Nhập tên file mới:")
+        dialog.setTextValue(current_name)
+        dialog.setStyleSheet(
+            f"""
+            QInputDialog {{ background-color: white; }}
+            QLabel {{ color: {COLOR_TEXT_PRIMARY}; font-size: 13px; background: transparent; }}
+            QLineEdit {{
+                background-color: white;
+                color: {COLOR_TEXT_PRIMARY};
+                border: 1.5px solid {COLOR_BORDER_STRONG};
+                border-radius: {CORNER_RADIUS}px;
+                padding: 4px 8px;
+                font-size: 13px;
+            }}
+            QPushButton {{
+                background-color: {COLOR_ACCENT};
+                color: white;
+                border: none;
+                border-radius: {CORNER_RADIUS}px;
+                padding: 6px 14px;
+                font-size: 13px;
+                font-weight: 700;
+                min-width: 84px;
+            }}
+            QPushButton:hover {{ background-color: #E28104; }}
+            """
+        )
+        ok = dialog.exec() == QInputDialog.Accepted
+        return dialog.textValue(), ok
 
     # ------------------------------------------------------------------
     # Xem trước (Cột B)
@@ -1113,7 +1465,7 @@ class MergeFeatureWidget(QWidget):
             self._selected_row.set_selected(False)
         row.set_selected(True)
         self._selected_row = row
-        self._load_preview(row.name, row.pages)
+        self._load_preview(row.path)
 
     def _select_first_available(self) -> None:
         if self.file_list.count() == 0:
@@ -1124,25 +1476,47 @@ class MergeFeatureWidget(QWidget):
         first_row = self.file_list.itemWidget(first_item)
         self._select_row(first_row)
 
-    def _load_preview(self, name: str, pages: int) -> None:
+    def _load_preview(self, path: str) -> None:
+        """Theo đúng luồng đã chốt ở 04_kien_truc_module_va_flow.md mục 5:
+        list_page_infos đọc metadata thật (đồng bộ, nhanh) để dựng khung trước,
+        sau đó ảnh thật render nền qua QThread, không chặn UI."""
+        self._cancel_active_render()
+
+        name = os.path.basename(path)
         self._current_file_name = name
-        self._current_total_pages = pages
-        self._current_page = 1 if pages > 0 else 0
+        self._current_file_path = path
         self.preview_title.setText(f"Xem trước: {name}")
-        self._build_preview_thumbs(pages)
-        self._build_preview_pages(pages)
+
+        try:
+            infos = list_page_infos(path)
+        except (CorruptedFileError, PasswordProtectedError) as exc:
+            self._show_error(f"Không thể xem trước '{name}': {exc}")
+            infos = []
+        except Exception as exc:
+            self._show_error(f"Không thể xem trước '{name}': {exc}")
+            infos = []
+
+        self._current_total_pages = len(infos)
+        self._current_page = 1 if infos else 0
+        self._build_preview_thumbs(infos)
+        self._build_preview_pages(infos)
         self._refresh_page_view()
 
+        if infos:
+            self._start_render_worker(path, infos)
+
     def _show_empty_preview(self) -> None:
+        self._cancel_active_render()
         self._current_file_name = None
+        self._current_file_path = None
         self._current_total_pages = 0
         self._current_page = 0
         self.preview_title.setText("Xem trước: —")
-        self._build_preview_thumbs(0)
-        self._build_preview_pages(0)
+        self._build_preview_thumbs([])
+        self._build_preview_pages([])
         self._refresh_page_view()
 
-    def _build_preview_thumbs(self, total_pages: int) -> None:
+    def _build_preview_thumbs(self, infos: List[PageInfo]) -> None:
         while self.thumb_layout.count():
             child = self.thumb_layout.takeAt(0)
             widget = child.widget()
@@ -1150,12 +1524,13 @@ class MergeFeatureWidget(QWidget):
                 widget.deleteLater()
         self._preview_thumbs = []
 
-        for i in range(total_pages):
-            page_number = i + 1
+        for info in infos:
+            page_number = info.source_index + 1
             wrapper = QWidget()
             wrapper_layout = QVBoxLayout(wrapper)
             wrapper_layout.setContentsMargins(0, 0, 0, 0)
             wrapper_layout.setSpacing(2)
+            wrapper_layout.setAlignment(Qt.AlignTop)
 
             thumb = _PreviewThumb(page_number)
             thumb.clicked.connect(self._on_thumb_clicked)
@@ -1169,34 +1544,100 @@ class MergeFeatureWidget(QWidget):
             )
             wrapper_layout.addWidget(num_label)
 
-            self.thumb_layout.addWidget(wrapper)
+            # Khóa cứng chiều cao đúng bằng nội dung thật (thumb + nhãn số) —
+            # nếu không, khi tổng số thumbnail ít hơn chiều cao khung cuộn,
+            # QScrollArea (setWidgetResizable=True) sẽ kéo container cao lên và
+            # layout dồn khoảng trống thừa xen giữa các thumbnail thay vì để
+            # trống ở cuối, gây giãn cách bất thường.
+            wrapper.setFixedHeight(wrapper.sizeHint().height())
+
+            self.thumb_layout.addWidget(wrapper, alignment=Qt.AlignTop)
             self._preview_thumbs.append(thumb)
 
-    def _build_preview_pages(self, total_pages: int) -> None:
-        """Dựng lại danh sách khung trang lớn (Cột B) theo file đang chọn — mỗi
-        khung là placeholder (mock), xếp dọc trong _PannablePreviewScrollArea để
-        cuộn chuột xem liên tục."""
+    def _build_preview_pages(self, infos: List[PageInfo]) -> None:
+        """Dựng lại danh sách khung trang lớn (Cột B) theo file đang chọn — khung
+        rỗng dựng trước theo đúng tỉ lệ khung hình thật của từng trang (PageInfo),
+        ảnh được điền vào sau khi worker render xong (_on_page_ready)."""
         for frame in self._preview_pages.values():
             self.preview_layout.removeWidget(frame)
             frame.deleteLater()
         self._preview_pages.clear()
         self._current_preview_width = None
 
-        if total_pages == 0:
+        if not infos:
             self._update_zoom_buttons_state()
             return
 
         width = self._compute_preview_width()
         self._current_preview_width = width
-        for i in range(total_pages):
-            page_number = i + 1
-            frame = _MergePreviewPage(page_number)
-            height = round(width * frame.aspect_ratio)
+        for info in infos:
+            page_number = info.source_index + 1
+            # Trang xoay 90/270 độ thì kích thước hiển thị (rộng x cao) đảo chiều
+            # so với kích thước gốc trong PDF.
+            if info.rotation in (90, 270):
+                eff_w, eff_h = info.height, info.width
+            else:
+                eff_w, eff_h = info.width, info.height
+            aspect_ratio = (
+                eff_h / eff_w if eff_w else
+                _PREVIEW_PAGE_HEIGHT_DEFAULT / _PREVIEW_PAGE_WIDTH_FALLBACK
+            )
+
+            frame = _MergePreviewPage(page_number, aspect_ratio)
+            height = round(width * aspect_ratio)
             frame.setFixedSize(width, height)
             self.preview_layout.addWidget(frame, alignment=Qt.AlignHCenter)
             self._preview_pages[page_number] = frame
 
         self._update_zoom_buttons_state()
+
+    # ------------------------------------------------------------------
+    # Render nền (QThread) cho Cột B
+    # ------------------------------------------------------------------
+    def _cancel_active_render(self) -> None:
+        if self._render_worker is not None:
+            self._render_worker.cancel()
+            self._render_worker.wait()
+            self._render_worker = None
+
+    def _start_render_worker(self, path: str, infos: List[PageInfo]) -> None:
+        self._render_token += 1
+        token = self._render_token
+        page_indexes = [info.source_index for info in infos]
+        worker = _MergePreviewWorker(token, path, page_indexes, self._renderer, self)
+        worker.thumb_ready.connect(self._on_thumb_ready)
+        worker.page_ready.connect(self._on_page_ready)
+        worker.render_error.connect(self._on_render_error)
+        worker.finished.connect(lambda w=worker: self._on_worker_finished(w))
+        self._render_worker = worker
+        worker.start()
+
+    def _on_worker_finished(self, worker: _MergePreviewWorker) -> None:
+        if self._render_worker is worker:
+            self._render_worker = None
+        worker.deleteLater()
+
+    def _on_thumb_ready(self, token: int, page_index: int, data: bytes) -> None:
+        if token != self._render_token:
+            return  # đã chuyển sang file khác — bỏ kết quả cũ
+        pixmap = QPixmap()
+        pixmap.loadFromData(data, "PNG")
+        if 0 <= page_index < len(self._preview_thumbs):
+            self._preview_thumbs[page_index].set_image(pixmap)
+
+    def _on_page_ready(self, token: int, page_index: int, data: bytes) -> None:
+        if token != self._render_token:
+            return
+        pixmap = QPixmap()
+        pixmap.loadFromData(data, "PNG")
+        frame = self._preview_pages.get(page_index + 1)
+        if frame is not None:
+            frame.set_image(pixmap)
+
+    def _on_render_error(self, token: int, message: str) -> None:
+        if token != self._render_token:
+            return
+        self._show_error(f"Lỗi khi render xem trước: {message}")
 
     def _on_thumb_clicked(self, page_number: int) -> None:
         self._current_page = page_number
@@ -1290,11 +1731,14 @@ class MergeFeatureWidget(QWidget):
         self.result_label.setStyleSheet(f"color: {COLOR_SUCCESS}; font-size: 12px; font-weight: 500;")
         self.result_label.setText(f"✓ {message}")
         self.result_label.show()
+        self.retry_button.hide()
 
-    def _show_error(self, message: str) -> None:
+    def _show_error(self, message: str, retryable: bool = False) -> None:
         self.result_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 12px; font-weight: 500;")
         self.result_label.setText(f"✕ {message}")
         self.result_label.show()
+        self.retry_button.setVisible(retryable)
 
     def _hide_result(self) -> None:
         self.result_label.hide()
+        self.retry_button.hide()

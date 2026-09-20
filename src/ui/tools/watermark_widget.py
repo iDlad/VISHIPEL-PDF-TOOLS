@@ -28,6 +28,28 @@ Các vấn đề UI đã fix từ trước (giữ nguyên):
 Tồn đọng không bắt buộc (giống Edit — xem 05_lo_trinh_phat_trien.md): render ảnh preview
 (thumbnail + trang lớn) hiện chạy đồng bộ trên UI thread, chưa dùng QThread — có thể cân
 nhắc chuyển sau nếu file nhiều trang gây giật UI lúc chọn file/đổi zoom.
+
+Fix bổ sung (đại ca yêu cầu đảo ngược quyết định Tiling toàn trang ở
+02_dac_ta_tinh_nang.md mục 7.3, quay lại phương án "1 dấu lớn duy nhất giữa trang" để
+tiết kiệm tài nguyên tính toán/vẽ):
+- `pdf_core.py`: `draw_text_watermark_tiled`/`draw_image_watermark_tiled` (+ helper
+  `_tile_positions`) đã được thay bằng `draw_text_watermark_centered`/
+  `draw_image_watermark_centered` — chỉ vẽ 1 lần duy nhất tại giữa mỗi trang.
+- `watermark_widget.py` (file này): preview Cột B quay lại vẽ 1 bản watermark lớn giữa
+  trang (khớp WYSIWYG với hàm centered mới).
+
+Fix đồng bộ kích thước/nét chữ Preview ↔ File thật (phát hiện qua ảnh chụp thực tế của
+đại ca — preview to/đậm hơn rõ rệt so với file xuất ra):
+1. `_WatermarkPreviewPage` giờ nhận thêm `page_width_points` (chiều rộng THẬT của trang
+   tính bằng points, lấy từ `PageInfo`) và dùng đúng tỷ lệ `w / page_width_points` để
+   quy đổi point -> pixel khi vẽ font size/scale ảnh — trước đây dùng nhầm hằng số cố
+   định `_PREVIEW_PAGE_WIDTH_FALLBACK` (340) làm mẫu số, sai lệch hẳn so với chiều rộng
+   thật của trang PDF (VD A4 ~595pt), khiến watermark trên preview to hơn hẳn thật.
+2. Bỏ `QFont.Bold` ép cứng trên preview — đổi thành `QFont.Normal` để khớp đúng nét chữ
+   Regular của font Segoe UI thật (`segoeui.ttf`) mà `pdf_core.py` dùng khi xuất file.
+3. Font size đổi từ QSpinBox sang **QComboBox editable** (48-99): vừa xổ list các mốc có
+   sẵn (48/54/60/66/72/78/84/90/96/99), vừa gõ tay số tự do, có `QIntValidator` chặn
+   nhập ngoài khoảng và tự chỉnh lại khi rời khỏi ô nếu gõ giá trị không hợp lệ.
 """
 from __future__ import annotations
 
@@ -43,6 +65,7 @@ from PySide6.QtGui import (
     QDesktopServices,
     QPainter,
     QFont,
+    QIntValidator,
     QPen,
     QPixmap,
 )
@@ -439,6 +462,11 @@ class _WatermarkPreviewPage(QFrame):
     mô phỏng Watermark động đè lên trên theo cấu hình hiện tại — thay cho bản demo trước
     đây chỉ vẽ nền trắng giả lập + nội dung giả (các đường kẻ xám).
 
+    Watermark hiển thị "1 dấu lớn duy nhất giữa trang" — khớp đúng theo
+    `pdf_core.draw_text_watermark_centered`/`draw_image_watermark_centered` (đại ca đã
+    yêu cầu đảo ngược quyết định Tiling toàn trang trước đó ở 02_dac_ta_tinh_nang.md mục
+    7.3, để tiết kiệm tài nguyên và không phải tính toán quá nhiều vị trí).
+
     Lưu ý về layer "Under Content" trong preview: PyMuPDF xuất ảnh trang là dữ liệu
     raster phẳng, không có khái niệm "xuyên thấu" như PDF vector layer thật, nên không
     thể mô phỏng đúng 100% việc watermark "nằm dưới" nội dung ngay trên Qt canvas. Ở đây
@@ -447,10 +475,17 @@ class _WatermarkPreviewPage(QFrame):
     `apply_watermark_to_pdf`, preview chỉ mang tính tham khảo bố cục/màu/góc xoay."""
 
     def __init__(self, page_number: int, aspect_ratio: Optional[float] = None,
+                 page_width_points: Optional[float] = None,
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.page_number = page_number
         self.aspect_ratio = aspect_ratio or (_PREVIEW_PAGE_HEIGHT_DEFAULT / _PREVIEW_PAGE_WIDTH_FALLBACK)
+        # Chiều rộng THẬT của trang PDF tính bằng points (VD A4 ~595pt) — dùng để quy đổi
+        # point -> pixel canvas ĐÚNG TỶ LỆ khi vẽ watermark mô phỏng (font size, scale ảnh).
+        # Trước đây code lấy nhầm hằng số cố định _PREVIEW_PAGE_WIDTH_FALLBACK (340, chỉ
+        # là kích thước khung mặc định khi chưa có trang thật) làm mẫu số quy đổi, khiến
+        # watermark trên preview to/nhỏ sai khác hẳn so với file PDF thật xuất ra.
+        self.page_width_points = page_width_points or _PREVIEW_PAGE_WIDTH_FALLBACK
         self.page_pixmap: Optional[QPixmap] = None
 
         self.wm_type = "Text"
@@ -515,12 +550,22 @@ class _WatermarkPreviewPage(QFrame):
         self._draw_watermark(painter, w, h, muted=muted)
 
     def _draw_watermark(self, painter: QPainter, w: int, h: int, muted: bool = False) -> None:
+        """Vẽ "1 dấu watermark lớn duy nhất giữa trang" — khớp đúng
+        `pdf_core.draw_text_watermark_centered`/`draw_image_watermark_centered`.
+
+        Quy đổi point (đơn vị PDF thật) -> pixel canvas Qt luôn dùng
+        `w / self.page_width_points` (chiều rộng khung hiện tại chia chiều rộng THẬT của
+        trang tính bằng points) — KHÔNG dùng hằng số cố định — để font size/scale ảnh
+        hiển thị đúng tỷ lệ so với file PDF thật xuất ra (trước đây dùng nhầm hằng số
+        `_PREVIEW_PAGE_WIDTH_FALLBACK` làm mẫu số, gây lệch kích thước khi trang thật có
+        chiều rộng points khác 340, VD trang A4 ~595pt)."""
         painter.save()
 
         opacity_percent = self.wm_opacity * (0.6 if muted else 1.0)
         alpha = max(0, min(255, round((opacity_percent / 100.0) * 255)))
         center_x = w / 2.0
         center_y = h / 2.0
+        points_to_px = w / self.page_width_points
 
         painter.translate(center_x, center_y)
         painter.rotate(-self.wm_rotation)
@@ -531,8 +576,11 @@ class _WatermarkPreviewPage(QFrame):
                 color.setAlpha(alpha)
                 painter.setPen(QPen(color))
 
-                scaled_font_size = max(10, round(self.wm_font_size * (w / _PREVIEW_PAGE_WIDTH_FALLBACK)))
-                font = QFont("Segoe UI", scaled_font_size, QFont.Bold)
+                # QFont.Normal (KHÔNG Bold) — khớp đúng nét chữ Regular của font
+                # Segoe UI thật (segoeui.ttf) mà pdf_core dùng khi xuất file, tránh nét
+                # chữ trên preview đậm/to hơn thật do bị ép Bold trước đây.
+                scaled_font_size = max(10, round(self.wm_font_size * points_to_px))
+                font = QFont("Segoe UI", scaled_font_size, QFont.Normal)
                 painter.setFont(font)
 
                 rect = QRectF(-w, -h / 2, w * 2, h)
@@ -546,7 +594,7 @@ class _WatermarkPreviewPage(QFrame):
             if pixmap is None or pixmap.isNull():
                 pixmap = qta.icon("mdi6.watermark", color="#FA9005").pixmap(QSize(120, 120))
 
-            scale_factor = (self.wm_scale / 100.0) * (w / _PREVIEW_PAGE_WIDTH_FALLBACK)
+            scale_factor = (self.wm_scale / 100.0) * points_to_px
             target_w = pixmap.width() * scale_factor
             target_h = pixmap.height() * scale_factor
 
@@ -779,16 +827,26 @@ class WatermarkFeatureWidget(QWidget):
         font_color_row = QHBoxLayout()
         font_color_row.setSpacing(10)
 
-        # Font Size Dropdown
+        # Font Size — QComboBox EDITABLE: vừa xổ list chọn nhanh các mốc có sẵn, vừa gõ
+        # tay số tự do (theo yêu cầu mới nhất của đại ca). Giới hạn khoảng 48-99 (đã đổi
+        # từ QSpinBox trước đó) — chỉ còn 1 dấu lớn duy nhất giữa trang nên cần font đủ
+        # lớn mới rõ nét, đồng thời tránh chọn cỡ quá lớn (>=100) dễ tràn mép trang khi
+        # kết hợp góc xoay tuỳ ý. `QIntValidator(48, 99)` chặn gõ số ngoài khoảng ngay
+        # khi nhập; `_on_font_size_editing_finished` tự chỉnh về biên gần nhất nếu người
+        # dùng gõ giá trị không hợp lệ (VD chữ, số âm, để trống) rồi rời khỏi ô.
         font_col = QVBoxLayout()
         font_col.setSpacing(4)
         font_lbl = QLabel("Font size")
         font_lbl.setStyleSheet(_LABEL_STYLE)
-        self.font_combo = QComboBox()
-        self.font_combo.setFixedHeight(CONTROL_HEIGHT)
-        self.font_combo.addItems(["18 pt", "24 pt", "36 pt", "48 pt", "60 pt", "72 pt"])
-        self.font_combo.setCurrentText("36 pt")
-        self.font_combo.setStyleSheet(
+        self.font_size_combo = QComboBox()
+        self.font_size_combo.setEditable(True)
+        self.font_size_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.font_size_combo.addItems([str(v) for v in (48, 54, 60, 66, 72, 78, 84, 90, 96, 99)])
+        self.font_size_combo.setCurrentText("72")
+        self.font_size_combo.setFixedHeight(CONTROL_HEIGHT)
+        self.font_size_combo.lineEdit().setAlignment(Qt.AlignCenter)
+        self.font_size_combo.setValidator(QIntValidator(48, 99, self.font_size_combo))
+        self.font_size_combo.setStyleSheet(
             f"""
             QComboBox {{
                 border: 1.5px solid {COLOR_BORDER_STRONG};
@@ -796,7 +854,8 @@ class WatermarkFeatureWidget(QWidget):
                 padding: 0 10px;
                 font-size: 13px;
                 color: {COLOR_TEXT_PRIMARY};
-                font-weight: 600;
+                font-weight: 700;
+                background-color: white;
             }}
             QComboBox QAbstractItemView {{
                 color: {COLOR_TEXT_PRIMARY};
@@ -806,9 +865,10 @@ class WatermarkFeatureWidget(QWidget):
             }}
             """
         )
-        self.font_combo.currentTextChanged.connect(self._sync_preview)
+        self.font_size_combo.currentTextChanged.connect(self._sync_preview)
+        self.font_size_combo.lineEdit().editingFinished.connect(self._on_font_size_editing_finished)
         font_col.addWidget(font_lbl)
-        font_col.addWidget(self.font_combo)
+        font_col.addWidget(self.font_size_combo)
 
         # Color Picker
         color_col = QVBoxLayout()
@@ -1313,7 +1373,7 @@ class WatermarkFeatureWidget(QWidget):
         self._current_file_path = None
         self._current_page_infos = []
         self.text_input.setText("CONFIDENTIAL")
-        self.font_combo.setCurrentText("36 pt")
+        self.font_size_combo.setCurrentText("72")
         self._selected_color = QColor("#B91C1C")
         self._update_color_btn_style()
 
@@ -1335,10 +1395,23 @@ class WatermarkFeatureWidget(QWidget):
     # Dựng cấu hình Watermark & gọi logic thật (pdf_core.apply_watermark_to_pdf)
     # ------------------------------------------------------------------
     def _current_font_size(self) -> int:
+        text = self.font_size_combo.currentText().strip()
         try:
-            return int(self.font_combo.currentText().replace("pt", "").strip())
+            value = int(text)
         except ValueError:
-            return 36
+            value = 72
+        return max(48, min(99, value))
+
+    def _on_font_size_editing_finished(self) -> None:
+        """Tự chỉnh lại ô nhập về đúng giá trị đã kẹp trong khoảng 48-99 sau khi người
+        dùng gõ tay xong (VD gõ thiếu số, để trống, hoặc chạm biên) — tránh hiển thị 1
+        chuỗi không hợp lệ còn sót lại trên ô combo editable."""
+        value = self._current_font_size()
+        if self.font_size_combo.currentText().strip() != str(value):
+            self.font_size_combo.blockSignals(True)
+            self.font_size_combo.setCurrentText(str(value))
+            self.font_size_combo.blockSignals(False)
+        self._sync_preview()
 
     def _build_text_config(self) -> TextWatermarkConfig:
         color = self._selected_color
@@ -1483,6 +1556,16 @@ class WatermarkFeatureWidget(QWidget):
                 return info.height / info.width
         return _PREVIEW_PAGE_HEIGHT_DEFAULT / _PREVIEW_PAGE_WIDTH_FALLBACK
 
+    def _page_width_points(self, page_index: int) -> float:
+        """Chiều rộng THẬT của trang tính bằng points (VD A4 ~595pt) — dùng để
+        `_WatermarkPreviewPage` quy đổi đúng tỷ lệ point -> pixel khi vẽ watermark mô
+        phỏng, khớp WYSIWYG với kích thước thật trên file PDF xuất ra."""
+        if 0 <= page_index < len(self._current_page_infos):
+            info = self._current_page_infos[page_index]
+            if info.width:
+                return info.width
+        return _PREVIEW_PAGE_WIDTH_FALLBACK
+
     def _render_page_into_frame(self, frame: "_WatermarkPreviewPage", page_index: int, width: int) -> None:
         """Render ảnh trang thật qua PageRenderer rồi gán vào frame preview. Lỗi (nếu có)
         chỉ ghi log, không chặn UI — frame giữ nền trắng làm placeholder."""
@@ -1574,7 +1657,10 @@ class WatermarkFeatureWidget(QWidget):
         for i in range(total_pages):
             page_number = i + 1
             aspect_ratio = self._page_aspect_ratio(i)
-            frame = _WatermarkPreviewPage(page_number, aspect_ratio=aspect_ratio)
+            page_width_pts = self._page_width_points(i)
+            frame = _WatermarkPreviewPage(
+                page_number, aspect_ratio=aspect_ratio, page_width_points=page_width_pts
+            )
             height = round(width * frame.aspect_ratio)
             frame.setFixedSize(width, height)
             self._render_page_into_frame(frame, i, width)

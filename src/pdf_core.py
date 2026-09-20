@@ -685,54 +685,35 @@ class ImageWatermarkConfig:
     layer_over: bool
 
 
-def _tile_positions(page_width: float, page_height: float,
-                     item_width: float, item_height: float) -> List[Tuple[float, float]]:
-    """Tính toạ độ (x, y) góc trên-trái cho từng bản lặp watermark phủ toàn trang
-    (Tiling — 07_...md mục 1.3, chốt là chế độ vị trí DUY NHẤT, không có option khác).
+def draw_text_watermark_centered(page: "fitz.Page", config: TextWatermarkConfig) -> None:
+    """Vẽ watermark chữ dạng "1 dấu lớn duy nhất giữa trang" lên 1 page ĐÃ MỞ SẴN — hàm
+    này không tự save, apply_watermark_to_pdf() chịu trách nhiệm ghi file 1 lần cho cả
+    tài liệu.
 
-    Khoảng đệm giữa các bản lặp = 50% kích thước watermark đã render, hệ thống tự tính,
-    không cho người dùng chỉnh. Lưới bắt đầu lệch âm 1 nửa kích thước watermark để các
-    bản lặp phủ đều luôn cả phần sát mép trang, không để trống viền trắng quanh mép."""
-    if item_width <= 0 or item_height <= 0:
-        return []
-    padding = max(item_width, item_height) * 0.5
-    step_x = item_width + padding
-    step_y = item_height + padding
+    THAY ĐỔI so với bản Tiling trước đó (đại ca đã yêu cầu đảo ngược quyết định ở
+    02_dac_ta_tinh_nang.md mục 7.3): vẽ 1 watermark duy nhất tại chính giữa trang thay
+    vì lặp nhiều bản phủ toàn trang, để tiết kiệm tài nguyên tính toán/vẽ (không còn
+    vòng lặp _tile_positions) và giảm số lượng TextWriter phải khởi tạo trên mỗi trang.
 
-    positions: List[Tuple[float, float]] = []
-    y = -item_height / 2
-    while y < page_height:
-        x = -item_width / 2
-        while x < page_width:
-            positions.append((x, y))
-            x += step_x
-        y += step_y
-    return positions
-
-
-def draw_text_watermark_tiled(page: "fitz.Page", config: TextWatermarkConfig) -> None:
-    """Vẽ watermark chữ lặp toàn trang lên 1 page ĐÃ MỞ SẴN — hàm này không tự save,
-    apply_watermark_to_pdf() chịu trách nhiệm ghi file 1 lần cho cả tài liệu.
-
-    BẮT BUỘC dùng `fitz.TextWriter` (không dùng `page.insert_text()` đơn giản) vì
+    Vẫn BẮT BUỘC dùng `fitz.TextWriter` (không dùng `page.insert_text()` đơn giản) vì
     `insert_text()` chỉ nhận `rotate` là bội số 90° — không đáp ứng được slider góc xoay
-    0-360° tuỳ ý đã chốt (07_...md mục 1.4.1). Mỗi bản lặp được vẽ bằng 1 TextWriter
-    riêng vì tham số `morph` của `write_text()` áp dụng cho TOÀN BỘ nội dung đã append
-    vào 1 TextWriter như MỘT phép biến đổi duy nhất quanh MỘT điểm neo — muốn mỗi bản
-    lặp tự xoay quanh tâm của chính nó thì phải tách TextWriter riêng cho từng bản."""
+    0-360° tuỳ ý đã chốt."""
     font = _get_watermark_font(config.fontfile)
     text_width = font.text_length(config.text, fontsize=config.font_size)
-    text_height = config.font_size * 1.2  # hệ số dòng ước lượng, đủ dùng để tính spacing tiling
+    text_height = config.font_size * 1.2  # hệ số dòng ước lượng, đủ dùng để canh giữa
 
-    positions = _tile_positions(page.rect.width, page.rect.height, text_width, text_height)
-    for (x, y) in positions:
-        tw = fitz.TextWriter(page.rect, color=config.color_rgb)
-        baseline = fitz.Point(x, y + config.font_size)
-        tw.append(baseline, config.text, font=font, fontsize=config.font_size)
+    center_x = page.rect.width / 2
+    center_y = page.rect.height / 2
+    x = center_x - text_width / 2
+    y = center_y - text_height / 2
 
-        center = fitz.Point(x + text_width / 2, y + text_height / 2)
-        morph = (center, fitz.Matrix(1, 1).prerotate(config.rotation))
-        tw.write_text(page, opacity=config.opacity, morph=morph, overlay=config.layer_over)
+    tw = fitz.TextWriter(page.rect, color=config.color_rgb)
+    baseline = fitz.Point(x, y + config.font_size)
+    tw.append(baseline, config.text, font=font, fontsize=config.font_size)
+
+    center = fitz.Point(center_x, center_y)
+    morph = (center, fitz.Matrix(1, 1).prerotate(config.rotation))
+    tw.write_text(page, opacity=config.opacity, morph=morph, overlay=config.layer_over)
 
 
 def _apply_opacity_to_pixmap(pixmap: "fitz.Pixmap", opacity: float) -> "fitz.Pixmap":
@@ -790,11 +771,15 @@ def _rotate_image_to_bytes(image_path: str, rotation_degrees: float,
         tmp_doc.close()
 
 
-def draw_image_watermark_tiled(page: "fitz.Page", config: ImageWatermarkConfig) -> None:
-    """Vẽ watermark ảnh lặp toàn trang lên 1 page ĐÃ MỞ SẴN — hàm này không tự save,
-    apply_watermark_to_pdf() chịu trách nhiệm ghi file 1 lần cho cả tài liệu.
+def draw_image_watermark_centered(page: "fitz.Page", config: ImageWatermarkConfig) -> None:
+    """Vẽ watermark ảnh dạng "1 dấu lớn duy nhất giữa trang" lên 1 page ĐÃ MỞ SẴN — hàm
+    này không tự save, apply_watermark_to_pdf() chịu trách nhiệm ghi file 1 lần cho cả
+    tài liệu.
 
-    Cũng phải "bake" góc xoay vào ảnh trước (xem _rotate_image_to_bytes) vì
+    THAY ĐỔI so với bản Tiling trước đó (xem chú thích ở draw_text_watermark_centered):
+    chỉ chèn 1 lần duy nhất tại chính giữa trang.
+
+    Vẫn phải "bake" góc xoay vào ảnh trước (xem _rotate_image_to_bytes) vì
     `page.insert_image()` chỉ nhận `rotate` là bội số 90°, giống hệt lý do với Text."""
     rotated_bytes, base_w, base_h = _rotate_image_to_bytes(
         config.image_path, config.rotation, config.opacity
@@ -803,27 +788,30 @@ def draw_image_watermark_tiled(page: "fitz.Page", config: ImageWatermarkConfig) 
     item_w = base_w * scale
     item_h = base_h * scale
 
-    positions = _tile_positions(page.rect.width, page.rect.height, item_w, item_h)
-    for (x, y) in positions:
-        rect = fitz.Rect(x, y, x + item_w, y + item_h)
-        page.insert_image(rect, stream=rotated_bytes, overlay=config.layer_over)
+    center_x = page.rect.width / 2
+    center_y = page.rect.height / 2
+    rect = fitz.Rect(
+        center_x - item_w / 2, center_y - item_h / 2,
+        center_x + item_w / 2, center_y + item_h / 2,
+    )
+    page.insert_image(rect, stream=rotated_bytes, overlay=config.layer_over)
 
 
 def apply_watermark_to_pdf(path: str, output_path: str,
                             text_config: Optional[TextWatermarkConfig] = None,
                             image_config: Optional[ImageWatermarkConfig] = None) -> str:
-    """Áp watermark (đúng 1 trong 2: Text HOẶC Image, theo mode đang chọn trên UI) lặp
-    toàn trang lên MỌI trang của file, xuất ra file MỚI — không ghi đè file gốc (tuân
-    theo quy ước chung 02_dac_ta_tinh_nang.md mục 0)."""
+    """Áp watermark (đúng 1 trong 2: Text HOẶC Image, theo mode đang chọn trên UI) — 1
+    dấu lớn duy nhất tại giữa mỗi trang — lên MỌI trang của file, xuất ra file MỚI —
+    không ghi đè file gốc (tuân theo quy ước chung 02_dac_ta_tinh_nang.md mục 0)."""
     if bool(text_config) == bool(image_config):
         raise ValueError("Phải truyền đúng 1 trong 2: text_config hoặc image_config")
 
     with PDFDocument(path) as doc:
         for page in doc.raw:
             if text_config is not None:
-                draw_text_watermark_tiled(page, text_config)
+                draw_text_watermark_centered(page, text_config)
             else:
-                draw_image_watermark_tiled(page, image_config)
+                draw_image_watermark_centered(page, image_config)
         _safe_save(doc.raw, output_path)
     return output_path
 

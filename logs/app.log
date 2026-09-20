@@ -40,3 +40,13 @@
 2026-09-19 22:03:55 [INFO] Đã chèn trang 1 của File A vào File B tại vị trí 1
 2026-09-19 22:03:58 [INFO] Đã chèn trang 1 của File A vào File B tại vị trí 3
 2026-09-19 22:04:03 [INFO] Đã lưu file Chèn: D:/Projects/Test file2.pdf
+2026-09-20 11:38:38 [INFO] Tách file thành công: 'D:/Temp/PDF_Merger.pdf' -> 6 file tại 'D:/Temp'
+2026-09-20 11:38:43 [INFO] Tách file thành công: 'D:/Temp/PDF_Merger.pdf' -> 6 file tại 'D:/Temp'
+2026-09-20 11:39:06 [INFO] Tách file thành công: 'D:/Temp/PDF_Merger.pdf' -> 4 file tại 'D:/Temp'
+2026-09-20 11:40:22 [INFO] Đã chọn File A (Insert): D:/Temp/PDF_Merger.pdf
+2026-09-20 11:40:24 [INFO] Đã chọn File B (Insert): D:/Temp/PDF_Merger_edited.pdf
+2026-09-20 11:40:30 [INFO] Đã chèn trang 1 của File A vào File B tại vị trí 0
+2026-09-20 11:40:31 [INFO] Đã hoàn tác (Undo) 1 lượt chèn trang ở tính năng Chèn file
+2026-09-20 11:40:34 [INFO] Đã chèn trang 1 của File A vào File B tại vị trí 1
+2026-09-20 11:40:38 [INFO] Đã lưu file Chèn: D:/Temp/PDF_Merger_edited_Insert.pdf
+2026-09-20 11:40:51 [INFO] Đã lưu file Chèn: D:/Temp/PDF_Merger_edited_Insert.pdf

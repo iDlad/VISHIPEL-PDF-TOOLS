@@ -1,7 +1,21 @@
 """
 Giao diện tính năng Chèn Watermark (WatermarkFeatureWidget) — Vishipel PDF Tools.
 
-Đã fix các vấn đề:
+Đã nối logic thật (phiên làm việc nối Watermark — xem 05_lo_trinh_phat_trien.md):
+1. Validate file đầu vào ngay lúc chọn (`pdf_core.list_page_infos`) — bắt file hỏng/có
+   mật khẩu, báo lỗi qua `result_label`, không cho vào xử lý (đúng mục 8 02_...md).
+2. Cột B (preview lớn) và dải thumbnail (Cột A) giờ render ẢNH TRANG PDF THẬT qua
+   `pdf_core.PageRenderer` (dùng chung với Split/Insert/Edit) làm nền, thay cho nội
+   dung giả lập (đường kẻ xám) trước đây — watermark vẫn được vẽ mô phỏng đè lên trên
+   theo cấu hình hiện tại để xem trước động, không cần ghi file thật mới xem được.
+3. Nút "Chèn Watermark" gọi thật `pdf_core.apply_watermark_to_pdf` với
+   `TextWatermarkConfig`/`ImageWatermarkConfig` dựng từ giá trị control hiện tại, có
+   dialog chọn nơi lưu (Save As, tên gợi ý mặc định `<tên gốc>_Watermark.pdf`), dialog
+   xác nhận trùng tên tự vẽ riêng `_OverwriteConfirmDialog` (Ghi đè/Đổi tên khác/Hủy,
+   đồng bộ style ảnh đại ca gửi — nền trắng/chữ tối/nút Accent), ghi log qua
+   `src/logger.py`, và tự mở thư mục kết quả sau khi lưu (giống Tách/Gộp/Chèn/Edit).
+
+Các vấn đề UI đã fix từ trước (giữ nguyên):
 1. Chỉnh màu chữ trong bảng chọn màu QColorDialog thành màu đen rõ nét.
 2. Bỏ khung bao ngoài cho giao diện Text (Text, Font size, Color nằm ngoài khung).
 3. Bỏ khung bao ngoài cho giao diện Image (tách riêng phần chọn ảnh & Scale).
@@ -10,22 +24,26 @@ Giao diện tính năng Chèn Watermark (WatermarkFeatureWidget) — Vishipel PD
    QWidget trần trước đó không có stylesheet riêng nên bị dính theme nền xám của app;
    đã ép transparent tường minh cho config_stack, text_config_widget, image_config_widget,
    đồng thời nới margin/spacing để bù lại khoảng thở sau khi bỏ khung.
+
+Tồn đọng không bắt buộc (giống Edit — xem 05_lo_trinh_phat_trien.md): render ảnh preview
+(thumbnail + trang lớn) hiện chạy đồng bộ trên UI thread, chưa dùng QThread — có thể cân
+nhắc chuyển sau nếu file nhiều trang gây giật UI lúc chọn file/đổi zoom.
 """
 from __future__ import annotations
 
-import math
+import os
 from typing import Dict, List, Optional
 
 import qtawesome as qta
-from PySide6.QtCore import Qt, Signal, QSize, QPoint, QRectF
+from PySide6.QtCore import Qt, Signal, QSize, QUrl, QRectF
 from PySide6.QtGui import (
     QDragEnterEvent,
     QDropEvent,
     QColor,
+    QDesktopServices,
     QPainter,
     QFont,
     QPen,
-    QBrush,
     QPixmap,
 )
 from PySide6.QtWidgets import (
@@ -45,7 +63,22 @@ from PySide6.QtWidgets import (
     QColorDialog,
     QStackedWidget,
     QButtonGroup,
+    QDialog,
 )
+
+from src.pdf_core import (
+    CorruptedFileError,
+    FileLockedError,
+    FontNotFoundError,
+    ImageWatermarkConfig,
+    PageInfo,
+    PageRenderer,
+    PasswordProtectedError,
+    TextWatermarkConfig,
+    apply_watermark_to_pdf,
+    list_page_infos,
+)
+from src.logger import log_error, log_info
 
 from src.ui.vishipel_theme import (
     COLOR_ACCENT,
@@ -77,6 +110,10 @@ _PREVIEW_SIDE_MARGIN = 12
 _PREVIEW_MIN_PAGE_WIDTH = 220
 _PREVIEW_PAGE_WIDTH_FALLBACK = 340
 _PREVIEW_PAGE_HEIGHT_DEFAULT = 460
+
+_DEFAULT_OUTPUT_SUFFIX = "_Watermark"
+"""Tên file gợi ý mặc định khi lưu kết quả: <tên file gốc>_Watermark.pdf (đại ca đã xác
+nhận — 02_dac_ta_tinh_nang.md mục 7 trước đó chưa nêu cụ thể tên mặc định)."""
 
 _LABEL_STYLE = f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; font-weight: 700; background: transparent; border: none;"
 
@@ -281,6 +318,9 @@ class _SegmentedControl(QFrame):
 # Cột B — Các thành phần Preview
 # ----------------------------------------------------------------------
 class _PreviewThumb(QFrame):
+    """Ô thumbnail dải bên trái — nay hiển thị ẢNH TRANG PDF THẬT (render qua
+    `PageRenderer.render_thumbnail`, dùng chung với Split/Edit) thay vì khung trống."""
+
     clicked = Signal(int)
 
     def __init__(self, page_number: int, parent: QWidget | None = None) -> None:
@@ -292,7 +332,7 @@ class _PreviewThumb(QFrame):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(0)
+        layout.setSpacing(2)
 
         badge_row = QHBoxLayout()
         self.badge = QLabel(str(page_number))
@@ -301,7 +341,11 @@ class _PreviewThumb(QFrame):
         badge_row.addWidget(self.badge)
         badge_row.addStretch()
         layout.addLayout(badge_row)
-        layout.addStretch()
+
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setStyleSheet("background: transparent; border: none;")
+        layout.addWidget(self.image_label, 1)
 
         self._apply_style()
 
@@ -323,6 +367,16 @@ class _PreviewThumb(QFrame):
     def set_current(self, current: bool) -> None:
         self.is_current = current
         self._apply_style()
+
+    def set_thumbnail(self, pixmap: QPixmap) -> None:
+        """Gán ảnh render thật của trang. Bỏ qua im lặng nếu ảnh rỗng/lỗi — giữ khung
+        trắng làm placeholder, không làm crash UI."""
+        if pixmap is None or pixmap.isNull():
+            return
+        avail_w = max(1, _THUMB_W - 12)
+        avail_h = max(1, _THUMB_H - _BADGE_SIZE - 10)
+        scaled = pixmap.scaled(avail_w, avail_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.image_label.setPixmap(scaled)
 
     def mousePressEvent(self, event) -> None:
         super().mousePressEvent(event)
@@ -380,12 +434,24 @@ class _PannablePreviewScrollArea(QScrollArea):
 
 
 class _WatermarkPreviewPage(QFrame):
-    """Trang xem trước vẽ mô phỏng Watermark động trực tiếp."""
+    """Trang xem trước: vẽ ẢNH TRANG PDF THẬT (render qua
+    `PageRenderer.render_page_detail`, dùng chung với Split/Insert/Edit) làm nền, rồi vẽ
+    mô phỏng Watermark động đè lên trên theo cấu hình hiện tại — thay cho bản demo trước
+    đây chỉ vẽ nền trắng giả lập + nội dung giả (các đường kẻ xám).
 
-    def __init__(self, page_number: int, parent: QWidget | None = None) -> None:
+    Lưu ý về layer "Under Content" trong preview: PyMuPDF xuất ảnh trang là dữ liệu
+    raster phẳng, không có khái niệm "xuyên thấu" như PDF vector layer thật, nên không
+    thể mô phỏng đúng 100% việc watermark "nằm dưới" nội dung ngay trên Qt canvas. Ở đây
+    chỉ vẽ watermark mờ hơn một chút khi chọn "Under Content" để gợi ý trực quan — file
+    PDF thật xuất ra vẫn tuân đúng layer Over/Under theo `overlay=` truyền cho
+    `apply_watermark_to_pdf`, preview chỉ mang tính tham khảo bố cục/màu/góc xoay."""
+
+    def __init__(self, page_number: int, aspect_ratio: Optional[float] = None,
+                 parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.page_number = page_number
-        self.aspect_ratio = _PREVIEW_PAGE_HEIGHT_DEFAULT / _PREVIEW_PAGE_WIDTH_FALLBACK
+        self.aspect_ratio = aspect_ratio or (_PREVIEW_PAGE_HEIGHT_DEFAULT / _PREVIEW_PAGE_WIDTH_FALLBACK)
+        self.page_pixmap: Optional[QPixmap] = None
 
         self.wm_type = "Text"
         self.wm_text = "CONFIDENTIAL"
@@ -400,6 +466,13 @@ class _WatermarkPreviewPage(QFrame):
         self.setStyleSheet(
             f"QFrame {{ background-color: white; border: 1px solid {COLOR_BORDER}; border-radius: 6px; }}"
         )
+
+    def set_page_pixmap(self, pixmap: QPixmap) -> None:
+        """Gán ảnh render thật của trang — gọi lại mỗi khi đổi file hoặc đổi mức zoom.
+        `PageRenderer` đã tự cache theo (path, page_index, width) nên không tốn công
+        render lại khi width không đổi."""
+        self.page_pixmap = pixmap
+        self.update()
 
     def update_watermark_config(
         self,
@@ -433,33 +506,19 @@ class _WatermarkPreviewPage(QFrame):
         w = self.width()
         h = self.height()
 
-        painter.setPen(QPen(QColor(COLOR_TEXT_SECONDARY)))
-        painter.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        painter.drawText(QRectF(12, 12, 40, 24), Qt.AlignLeft | Qt.AlignVCenter, str(self.page_number))
+        # Nền: ảnh trang PDF thật (nếu đã render xong) — thay cho nội dung giả lập.
+        # Nếu chưa render kịp (VD vừa đổi zoom), giữ nền trắng của QFrame làm placeholder.
+        if self.page_pixmap is not None and not self.page_pixmap.isNull():
+            painter.drawPixmap(self.rect(), self.page_pixmap, self.page_pixmap.rect())
 
-        if self.wm_layer == "Under Content":
-            self._draw_watermark(painter, w, h)
-            self._draw_dummy_content(painter, w, h)
-        else:
-            self._draw_dummy_content(painter, w, h)
-            self._draw_watermark(painter, w, h)
+        muted = self.wm_layer == "Under Content"
+        self._draw_watermark(painter, w, h, muted=muted)
 
-    def _draw_dummy_content(self, painter: QPainter, w: int, h: int) -> None:
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(QColor("#E2E8F0")))
-        margin = 30
-        line_height = 10
-        spacing = 14
-        curr_y = 60
-        while curr_y < h - 40:
-            line_w = w - (margin * 2) if (curr_y % 3 != 0) else (w - margin * 2) * 0.65
-            painter.drawRoundedRect(QRectF(margin, curr_y, line_w, line_height), 3, 3)
-            curr_y += line_height + spacing
-
-    def _draw_watermark(self, painter: QPainter, w: int, h: int) -> None:
+    def _draw_watermark(self, painter: QPainter, w: int, h: int, muted: bool = False) -> None:
         painter.save()
 
-        alpha = max(0, min(255, round((self.wm_opacity / 100.0) * 255)))
+        opacity_percent = self.wm_opacity * (0.6 if muted else 1.0)
+        alpha = max(0, min(255, round((opacity_percent / 100.0) * 255)))
         center_x = w / 2.0
         center_y = h / 2.0
 
@@ -491,11 +550,132 @@ class _WatermarkPreviewPage(QFrame):
             target_w = pixmap.width() * scale_factor
             target_h = pixmap.height() * scale_factor
 
-            painter.setOpacity(self.wm_opacity / 100.0)
+            painter.setOpacity(opacity_percent / 100.0)
             target_rect = QRectF(-target_w / 2.0, -target_h / 2.0, target_w, target_h)
             painter.drawPixmap(target_rect.toRect(), pixmap)
 
         painter.restore()
+
+
+# ----------------------------------------------------------------------
+# Dialog xác nhận trùng tên file (Ghi đè / Đổi tên khác / Hủy)
+# ----------------------------------------------------------------------
+class _OverwriteConfirmDialog(QDialog):
+    """Dialog xác nhận khi tên file kết quả bị trùng — tự vẽ riêng bằng QDialog, đồng bộ
+    style ảnh đại ca gửi (nền trắng, chữ tối, nút Accent cho hành động chính), thay cho
+    cảnh báo ghi đè mặc định của hệ điều hành (đã tắt qua
+    `QFileDialog.Option.DontConfirmOverwrite` ở nơi gọi dialog chọn nơi lưu, để không hỏi
+    2 lần cho cùng 1 việc — đúng quy ước chung đã dùng cho Gộp file/Edit/Chèn file)."""
+
+    RESULT_OVERWRITE = "overwrite"
+    RESULT_RENAME = "rename"
+    RESULT_CANCEL = "cancel"
+
+    def __init__(self, filename: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Trùng tên file")
+        self.setModal(True)
+        self.setFixedWidth(420)
+        self._result = self.RESULT_CANCEL
+
+        self.setStyleSheet("QDialog { background-color: white; }")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 20, 22, 18)
+        layout.setSpacing(18)
+
+        message_row = QHBoxLayout()
+        message_row.setSpacing(14)
+
+        icon_label = QLabel()
+        icon_label.setPixmap(qta.icon("mdi6.alert", color=COLOR_ACCENT).pixmap(QSize(28, 28)))
+        icon_label.setStyleSheet("background: transparent; border: none;")
+        icon_label.setAlignment(Qt.AlignTop)
+        message_row.addWidget(icon_label)
+
+        text_label = QLabel(
+            f"File '{filename}' đã tồn tại trong thư mục đã chọn.\nBạn muốn làm gì?"
+        )
+        text_label.setWordWrap(True)
+        text_label.setStyleSheet(
+            f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; font-weight: 500; "
+            "background: transparent; border: none;"
+        )
+        message_row.addWidget(text_label, 1)
+        layout.addLayout(message_row)
+
+        button_row = QHBoxLayout()
+        button_row.setSpacing(10)
+
+        overwrite_btn = QPushButton("Ghi đè")
+        overwrite_btn.setCursor(Qt.PointingHandCursor)
+        overwrite_btn.setFixedHeight(CONTROL_HEIGHT)
+        overwrite_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background-color: {COLOR_ACCENT};
+                color: white;
+                border: none;
+                border-radius: {CORNER_RADIUS}px;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 0 16px;
+            }}
+            QPushButton:hover {{ background-color: #E28104; }}
+            QPushButton:pressed {{ background-color: #C87203; }}
+            """
+        )
+        overwrite_btn.clicked.connect(self._on_overwrite)
+        button_row.addWidget(overwrite_btn)
+
+        rename_btn = QPushButton("Đổi tên khác")
+        rename_btn.setCursor(Qt.PointingHandCursor)
+        rename_btn.setFixedHeight(CONTROL_HEIGHT)
+        rename_btn.setStyleSheet(self._secondary_btn_qss())
+        rename_btn.clicked.connect(self._on_rename)
+        button_row.addWidget(rename_btn)
+
+        cancel_btn = QPushButton("Hủy")
+        cancel_btn.setCursor(Qt.PointingHandCursor)
+        cancel_btn.setFixedHeight(CONTROL_HEIGHT)
+        cancel_btn.setStyleSheet(self._secondary_btn_qss())
+        cancel_btn.clicked.connect(self._on_cancel)
+        button_row.addWidget(cancel_btn)
+
+        layout.addLayout(button_row)
+
+    def _secondary_btn_qss(self) -> str:
+        return f"""
+            QPushButton {{
+                background-color: white;
+                color: {COLOR_TEXT_PRIMARY};
+                border: 1.5px solid {COLOR_BORDER_STRONG};
+                border-radius: {CORNER_RADIUS}px;
+                font-size: 13px;
+                font-weight: 600;
+                padding: 0 16px;
+            }}
+            QPushButton:hover {{ background-color: #F3F4F6; }}
+            QPushButton:pressed {{ background-color: #E5E7EB; }}
+        """
+
+    def _on_overwrite(self) -> None:
+        self._result = self.RESULT_OVERWRITE
+        self.accept()
+
+    def _on_rename(self) -> None:
+        self._result = self.RESULT_RENAME
+        self.accept()
+
+    def _on_cancel(self) -> None:
+        self._result = self.RESULT_CANCEL
+        self.reject()
+
+    @staticmethod
+    def ask(parent: Optional[QWidget], filename: str) -> str:
+        dialog = _OverwriteConfirmDialog(filename, parent)
+        dialog.exec()
+        return dialog._result
 
 
 # ----------------------------------------------------------------------
@@ -506,10 +686,12 @@ class WatermarkFeatureWidget(QWidget):
         super().__init__(parent)
 
         self._current_file_path: Optional[str] = None
+        self._current_page_infos: List[PageInfo] = []
         self._current_total_pages = 0
         self._current_page = 0
         self._preview_thumbs: List[_PreviewThumb] = []
         self._preview_pages: Dict[int, _WatermarkPreviewPage] = {}
+        self._renderer = PageRenderer()
 
         self._zoom_level: float = _ZOOM_DEFAULT
         self._current_preview_width: Optional[int] = None
@@ -986,8 +1168,9 @@ class WatermarkFeatureWidget(QWidget):
         root_layout.addWidget(column_a_widget, 40)
         root_layout.addWidget(column_b_widget, 60)
 
-        # Load file mặc định
-        self._on_file_selected("Tai lieu 02.pdf")
+        # Trạng thái rỗng ban đầu — chưa có file thật nào được chọn (đã bỏ dữ liệu demo
+        # "Tai lieu 02.pdf" trước đây vì không phải file thật, không thể render/xử lý).
+        self._show_empty_preview()
 
     # ------------------------------------------------------------------
     # QSS Helpers
@@ -1095,21 +1278,40 @@ class WatermarkFeatureWidget(QWidget):
         )
         if path:
             self._watermark_image_path = path
-            name = path.replace("\\", "/").split("/")[-1]
+            name = os.path.basename(path)
             self.img_name_lbl.setText(name)
             self.img_sub_lbl.setText("Đã chọn ảnh")
             self.change_img_btn.setText("Đổi ảnh")
             self._sync_preview()
 
     def _on_file_selected(self, path: str) -> None:
+        """Validate file ngay lúc chọn (mục 8 02_dac_ta_tinh_nang.md): bắt file hỏng /
+        có mật khẩu, báo lỗi qua result_label, KHÔNG cho vào xử lý — giữ nguyên file
+        đang chọn trước đó (nếu có) thay vì xóa trắng preview."""
+        try:
+            page_infos = list_page_infos(path)
+        except PasswordProtectedError:
+            self._show_error(f"File có mật khẩu, không thể mở: {os.path.basename(path)}")
+            return
+        except CorruptedFileError:
+            self._show_error(f"Không thể đọc file, file có thể bị hỏng: {os.path.basename(path)}")
+            return
+        except Exception as exc:  # phòng hờ lỗi không lường trước, không để crash UI
+            log_error(f"Lỗi không xác định khi mở file: {path}", exc)
+            self._show_error(f"Không thể mở file: {os.path.basename(path)}")
+            return
+
         self._current_file_path = path
-        name = path.replace("\\", "/").split("/")[-1]
-        mock_pages = 4
-        self._load_preview(name, mock_pages)
+        self._current_page_infos = page_infos
+        self._renderer.clear_cache(path)  # tránh dính ảnh cache cũ nếu chọn lại đúng file này
+
+        name = os.path.basename(path)
+        self._load_preview(name, len(page_infos))
         self._hide_result()
 
     def _on_clear_clicked(self) -> None:
         self._current_file_path = None
+        self._current_page_infos = []
         self.text_input.setText("CONFIDENTIAL")
         self.font_combo.setCurrentText("36 pt")
         self._selected_color = QColor("#B91C1C")
@@ -1129,29 +1331,133 @@ class WatermarkFeatureWidget(QWidget):
         self._show_empty_preview()
         self._hide_result()
 
+    # ------------------------------------------------------------------
+    # Dựng cấu hình Watermark & gọi logic thật (pdf_core.apply_watermark_to_pdf)
+    # ------------------------------------------------------------------
+    def _current_font_size(self) -> int:
+        try:
+            return int(self.font_combo.currentText().replace("pt", "").strip())
+        except ValueError:
+            return 36
+
+    def _build_text_config(self) -> TextWatermarkConfig:
+        color = self._selected_color
+        return TextWatermarkConfig(
+            text=self.text_input.text(),
+            font_size=self._current_font_size(),
+            color_rgb=(color.redF(), color.greenF(), color.blueF()),
+            opacity=self.opacity_spin.value() / 100.0,
+            rotation=float(self.angle_spin.value()),
+            layer_over=(self.layer_segmented.current_index() == 0),
+        )
+
+    def _build_image_config(self) -> ImageWatermarkConfig:
+        return ImageWatermarkConfig(
+            image_path=self._watermark_image_path,
+            scale_percent=float(self.scale_spin.value()),
+            opacity=self.opacity_spin.value() / 100.0,
+            rotation=float(self.angle_spin.value()),
+            layer_over=(self.layer_segmented.current_index() == 0),
+        )
+
+    def _prompt_save_path(self, default_dir: str, default_name: str) -> Optional[str]:
+        """Hiện dialog chọn nơi lưu (kiểu Save As, gộp chung chọn thư mục + đặt tên,
+        giống Edit/Chèn file). Nếu trùng tên, hỏi lại bằng `_OverwriteConfirmDialog`
+        (Ghi đè / Đổi tên khác / Hủy) — đã tắt cảnh báo ghi đè mặc định của hệ điều hành
+        qua `QFileDialog.Option.DontConfirmOverwrite` để không hỏi 2 lần."""
+        current_dir = default_dir
+        current_name = default_name
+        while True:
+            suggested = os.path.join(current_dir, current_name)
+            save_path, _ = QFileDialog.getSaveFileName(
+                self, "Lưu file kết quả", suggested, "PDF Files (*.pdf)",
+                options=QFileDialog.Option.DontConfirmOverwrite,
+            )
+            if not save_path:
+                return None  # người dùng bấm Hủy trên dialog chọn nơi lưu
+
+            if os.path.exists(save_path):
+                filename = os.path.basename(save_path)
+                choice = _OverwriteConfirmDialog.ask(self, filename)
+                if choice == _OverwriteConfirmDialog.RESULT_OVERWRITE:
+                    return save_path
+                elif choice == _OverwriteConfirmDialog.RESULT_RENAME:
+                    current_dir = os.path.dirname(save_path)
+                    current_name = filename
+                    continue  # mở lại dialog chọn nơi lưu để đặt tên khác
+                else:
+                    return None  # Hủy toàn bộ thao tác lưu
+
+            return save_path
+
+    def _open_result_folder(self, file_path: str) -> None:
+        """Tự động mở thư mục chứa file kết quả — giống Tách/Gộp/Chèn file/Edit."""
+        folder = os.path.dirname(file_path)
+        if folder:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+
     def _on_apply_clicked(self) -> None:
         if not self._current_file_path:
             self._show_error("Vui lòng chọn file PDF trước khi thực hiện.")
             return
 
         wm_type = "Text" if self.type_segmented.current_index() == 0 else "Image"
-        if wm_type == "Image" and not self._watermark_image_path:
-            self._show_error("Vui lòng chọn file ảnh làm Watermark.")
-            return
 
-        self._show_success(
-            f"[Demo giao diện] Đã chèn Watermark ({wm_type}) vào file thành công!"
-        )
+        if wm_type == "Text":
+            if not self.text_input.text().strip():
+                self._show_error("Vui lòng nhập nội dung chữ cho Watermark.")
+                return
+            config_kwargs = {"text_config": self._build_text_config()}
+        else:
+            if not self._watermark_image_path:
+                self._show_error("Vui lòng chọn file ảnh làm Watermark.")
+                return
+            config_kwargs = {"image_config": self._build_image_config()}
+
+        base_name = os.path.splitext(os.path.basename(self._current_file_path))[0]
+        default_dir = os.path.dirname(self._current_file_path)
+        default_name = f"{base_name}{_DEFAULT_OUTPUT_SUFFIX}.pdf"
+
+        save_path = self._prompt_save_path(default_dir, default_name)
+        if not save_path:
+            return  # người dùng đã hủy — không hiện thông báo gì thêm
+
+        self.setCursor(Qt.WaitCursor)
+        try:
+            apply_watermark_to_pdf(self._current_file_path, save_path, **config_kwargs)
+        except FontNotFoundError as exc:
+            log_error("Lỗi font khi chèn watermark", exc)
+            self._show_error(
+                "Không tìm thấy font Segoe UI trên máy (C:\\Windows\\Fonts\\segoeui.ttf) — "
+                "tính năng này chỉ chạy đúng trên Windows có sẵn font hệ thống này."
+            )
+            return
+        except PasswordProtectedError:
+            self._show_error("File có mật khẩu, không thể xử lý.")
+            return
+        except CorruptedFileError:
+            self._show_error("File PDF hỏng hoặc không đọc được.")
+            return
+        except FileLockedError:
+            self._show_error("File đang được sử dụng bởi chương trình khác, vui lòng đóng và thử lại.")
+            return
+        except Exception as exc:  # phòng hờ lỗi không lường trước, không để crash UI
+            log_error("Lỗi không xác định khi chèn watermark", exc)
+            self._show_error(f"Đã xảy ra lỗi khi chèn Watermark: {exc}")
+            return
+        finally:
+            self.unsetCursor()
+
+        log_info(f"Đã chèn Watermark ({wm_type}) vào '{self._current_file_path}' -> '{save_path}'")
+        self._show_success(f"Đã chèn Watermark ({wm_type}) thành công! Kết quả: {save_path}")
+        self._open_result_folder(save_path)
 
     # ------------------------------------------------------------------
     # Xử lý Preview (Cột B)
     # ------------------------------------------------------------------
     def _sync_preview(self) -> None:
         wm_type = "Text" if self.type_segmented.current_index() == 0 else "Image"
-        try:
-            font_size = int(self.font_combo.currentText().replace("pt", "").strip())
-        except ValueError:
-            font_size = 36
+        font_size = self._current_font_size()
 
         layer = "Over Content" if self.layer_segmented.current_index() == 0 else "Under Content"
 
@@ -1167,6 +1473,28 @@ class WatermarkFeatureWidget(QWidget):
                 rotation=self.angle_spin.value(),
                 layer=layer,
             )
+
+    def _page_aspect_ratio(self, page_index: int) -> float:
+        """Tỉ lệ cao/rộng thật của trang (theo kích thước points từ PageInfo) — dùng
+        thay cho tỉ lệ mặc định giả định khi đã có file thật."""
+        if 0 <= page_index < len(self._current_page_infos):
+            info = self._current_page_infos[page_index]
+            if info.width:
+                return info.height / info.width
+        return _PREVIEW_PAGE_HEIGHT_DEFAULT / _PREVIEW_PAGE_WIDTH_FALLBACK
+
+    def _render_page_into_frame(self, frame: "_WatermarkPreviewPage", page_index: int, width: int) -> None:
+        """Render ảnh trang thật qua PageRenderer rồi gán vào frame preview. Lỗi (nếu có)
+        chỉ ghi log, không chặn UI — frame giữ nền trắng làm placeholder."""
+        if not self._current_file_path:
+            return
+        try:
+            data = self._renderer.render_page_detail(self._current_file_path, page_index, target_width=width)
+            pixmap = QPixmap()
+            pixmap.loadFromData(data)
+            frame.set_page_pixmap(pixmap)
+        except Exception as exc:
+            log_error(f"Lỗi render preview trang {page_index + 1}", exc)
 
     def _load_preview(self, name: str, pages: int) -> None:
         self._current_total_pages = pages
@@ -1215,6 +1543,19 @@ class WatermarkFeatureWidget(QWidget):
             self.thumb_layout.addWidget(wrapper)
             self._preview_thumbs.append(thumb)
 
+            # Render ảnh thumbnail thật (giống Tách file/Edit) — chạy đồng bộ trên UI
+            # thread, xem tồn đọng không bắt buộc ở đầu file.
+            if self._current_file_path:
+                try:
+                    data = self._renderer.render_thumbnail(
+                        self._current_file_path, i, max_width=_THUMB_W - 8
+                    )
+                    pixmap = QPixmap()
+                    pixmap.loadFromData(data)
+                    thumb.set_thumbnail(pixmap)
+                except Exception as exc:
+                    log_error(f"Lỗi render thumbnail trang {page_number}", exc)
+
         self.thumb_layout.addStretch()
 
     def _build_preview_pages(self, total_pages: int) -> None:
@@ -1232,9 +1573,11 @@ class WatermarkFeatureWidget(QWidget):
         self._current_preview_width = width
         for i in range(total_pages):
             page_number = i + 1
-            frame = _WatermarkPreviewPage(page_number)
+            aspect_ratio = self._page_aspect_ratio(i)
+            frame = _WatermarkPreviewPage(page_number, aspect_ratio=aspect_ratio)
             height = round(width * frame.aspect_ratio)
             frame.setFixedSize(width, height)
+            self._render_page_into_frame(frame, i, width)
             self.preview_layout.addWidget(frame, alignment=Qt.AlignHCenter)
             self._preview_pages[page_number] = frame
 
@@ -1280,9 +1623,10 @@ class WatermarkFeatureWidget(QWidget):
             return
         self._current_preview_width = new_width
 
-        for frame in self._preview_pages.values():
+        for page_number, frame in self._preview_pages.items():
             new_height = round(new_width * frame.aspect_ratio)
             frame.setFixedSize(new_width, new_height)
+            self._render_page_into_frame(frame, page_number - 1, new_width)
 
         self._update_zoom_buttons_state()
         self._update_zoom_percent_label()

@@ -20,24 +20,31 @@ Bố cục 2 cột (A ~55% - B ~45%):
 - Bật checkbox "Xóa" toàn cục → chuột phải toggle đánh dấu (viền đỏ, chỉ là trạng thái
   UI + PageEditSession.toggle_mark(), CHƯA tính là 1 bước Undo) → nhấn phím Delete để
   thực sự xóa các trang đang đánh dấu khỏi lưới (PageEditSession.delete_marked(),
-  CHỈ lúc này mới đăng ký 1 bước Undo — đúng đặc tả "nhấn Delete để xóa khỏi lưới").
+  CHỈ lúc này mới đăng ký 1 bước Undo). Nếu bấm "Lưu File" mà VẪN CÒN trang đang đánh
+  dấu (dù đã bấm Delete hay chưa, dù checkbox đang bật hay đã tắt) — hệ thống TỰ ĐỘNG
+  xóa các trang đó trước khi ghi file, đảm bảo file kết quả không bao giờ còn sót
+  trang đã đánh dấu (đã xác nhận với đại ca — không phải sinh ra thao tác Undo riêng
+  cho việc này, chỉ tái dùng đúng luồng xóa đã có: `_delete_marked_pages()`).
 - Hàng thao tác dưới cùng: Nhãn "Xóa" + checkbox → Undo + Redo → Clear → Lưu File.
-  (Đã bổ sung nút Redo cạnh Undo so với bản UI gốc — đặc tả 02 mục 3 yêu cầu rõ
-  "Hỗ trợ Undo/Redo cho toàn bộ thao tác", bản UI trước đó mới chỉ có Undo.)
 - Cột B: khung preview cuộn liên tục nhiều trang (ảnh render thật qua PageRenderer),
   re-render lại theo đúng thứ tự mới sau mỗi lần Move. Zoom In/Out (±15%, 50%-200%,
   mặc định 100% = vừa khít khung) + pan chuột trái khi đã zoom to hơn khung.
+- Lưu File: dùng `_OverwriteConfirmDialog` tự vẽ (đồng bộ style dialog trùng tên của
+  Gộp file) thay cho cảnh báo ghi đè mặc định của Windows (đã tắt qua
+  `QFileDialog.Option.DontConfirmOverwrite` để không hỏi 2 lần cùng 1 việc — đúng cách
+  Chèn file đã làm). Sau khi lưu thành công, tự động mở thư mục chứa file kết quả
+  (`QDesktopServices`), giống Tách file/Chèn file.
 
 Toàn bộ logic PDF thật: chỉ gọi qua `pdf_core.py` (PageEditSession, PageRenderer) —
 widget không tự xử lý PDF, đúng nguyên tắc chung ở 04_kien_truc_module_va_flow.md.
-Undo/Redo: `src/undo_manager.UndoManager` (dựa trên snapshot PageEditSession.snapshot()/
-restore(), xem chú thích đầy đủ trong file đó) — độc lập hoàn toàn với
-`src/undo_logic.py` (InsertUndoManager, dùng riêng cho Chèn file).
+Undo/Redo: `src/undo_manager.UndoManager` — độc lập hoàn toàn với `src/undo_logic.py`
+(InsertUndoManager, dùng riêng cho Chèn file).
 
 Original_id của mỗi `_EditPageThumbnail` / preview frame = `source_index` GỐC (0-based)
 trong file PDF ban đầu — CỐ ĐỊNH suốt vòng đời widget (khớp `page_id` mà PageEditSession
-dùng cho rotate()/toggle_mark()/get_pending_rotation()). Badge "#..." mới là VỊ TRÍ hiển
-thị hiện tại (1..N), được đánh lại liên tục sau mỗi lần Move/Undo/Redo/Xóa.
+dùng cho rotate()/toggle_mark()/get_pending_rotation()). Badge số trên thumbnail Cột A
+là VỊ TRÍ hiển thị hiện tại (1..N, không có ký tự "#"), được đánh lại liên tục sau mỗi
+lần Move/Undo/Redo/Xóa.
 """
 from __future__ import annotations
 
@@ -45,8 +52,8 @@ import os
 from typing import Dict, List, Optional
 
 import qtawesome as qta
-from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPixmap
+from PySide6.QtCore import Qt, Signal, QSize, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPixmap, QDesktopServices
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -59,6 +66,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QFrame,
     QFileDialog,
+    QDialog,
     QGraphicsOpacityEffect,
 )
 
@@ -83,14 +91,11 @@ _THUMB_SIZE = 128
 _THUMB_IMAGE_MAX = _THUMB_SIZE - 34  # chừa chỗ cho move_target_label + rotation_badge dưới ảnh
 
 # Zoom Cột B: mỗi lần bấm Zoom In/Out ±15%, giới hạn 50%-200%.
-# Mặc định 100% = chiều rộng "vừa khít khung hiển thị" hiện tại — đồng bộ với
-# split_widget.py / merge_widget.py.
 _ZOOM_MIN = 0.5
 _ZOOM_MAX = 2.0
 _ZOOM_STEP = 0.15
 _ZOOM_DEFAULT = 1.0
 
-# Lề trái/phải giữa nội dung preview và biên khung Cột B.
 _PREVIEW_SIDE_MARGIN = 12
 _PREVIEW_MIN_PAGE_WIDTH = 220
 
@@ -98,6 +103,8 @@ _CHECKBOX_SIZE = 22
 _CHECKBOX_RADIUS = round(CORNER_RADIUS * _CHECKBOX_SIZE / CONTROL_HEIGHT)
 
 _DROPZONE_ICON_BOX = 56
+
+_WARNING_COLOR = "#F59E0B"
 
 
 _SCROLLBAR_QSS = f"""
@@ -171,7 +178,7 @@ def _zoom_button_style() -> str:
 
 
 def _action_button_style() -> str:
-    """Style dùng chung cho Undo/Redo/Clear (nút phụ, nền trắng viền xám)."""
+    """Style dùng chung cho Undo/Redo/Clear/"Đổi tên khác"/"Hủy" (nút phụ, nền trắng viền xám)."""
     return f"""
         QPushButton {{
             background-color: white;
@@ -188,29 +195,132 @@ def _action_button_style() -> str:
         """
 
 
+def _primary_button_style() -> str:
+    """Style nút hành động chính màu Accent — dùng cho "Lưu File" và nút "Ghi đè"."""
+    return f"""
+        QPushButton {{
+            background-color: {COLOR_ACCENT};
+            color: white;
+            border: none;
+            border-radius: {CORNER_RADIUS}px;
+            font-size: 13px;
+            font-weight: 700;
+            padding: 0 16px;
+        }}
+        QPushButton:hover {{ background-color: #E28104; }}
+        QPushButton:pressed {{ background-color: #C87203; }}
+        """
+
+
+# ----------------------------------------------------------------------
+# Hộp thoại trùng tên khi Lưu File — tự vẽ, KHÔNG dùng QMessageBox mặc định, đồng bộ
+# 100% thiết kế với dialog trùng tên của Gộp file (merge_widget.py): icon cảnh báo màu
+# vàng + message 2 dòng + 3 nút Ghi đè (Accent, hành động chính) / Đổi tên khác / Hủy.
+# ----------------------------------------------------------------------
+class _OverwriteConfirmDialog(QDialog):
+    ACTION_OVERWRITE = "overwrite"
+    ACTION_RENAME = "rename"
+    ACTION_CANCEL = "cancel"
+
+    def __init__(self, filename: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Trùng tên file")
+        self.setModal(True)
+        self.setFixedWidth(420)
+        self.result_action: str = self.ACTION_CANCEL
+        self.setStyleSheet("QDialog { background-color: white; }")
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 20, 22, 18)
+        root.setSpacing(22)
+
+        message_row = QHBoxLayout()
+        message_row.setSpacing(14)
+
+        icon_label = QLabel()
+        icon_label.setPixmap(qta.icon("mdi6.alert", color=_WARNING_COLOR).pixmap(30, 30))
+        icon_label.setStyleSheet("background: transparent; border: none;")
+        icon_label.setAlignment(Qt.AlignTop)
+        message_row.addWidget(icon_label)
+
+        text_label = QLabel(
+            f"File '{filename}' đã tồn tại trong thư mục đã chọn.\nBạn muốn làm gì?"
+        )
+        text_label.setWordWrap(True)
+        text_label.setStyleSheet(
+            f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; font-weight: 500; "
+            "background: transparent; border: none;"
+        )
+        message_row.addWidget(text_label, stretch=1)
+        root.addLayout(message_row)
+
+        button_row = QHBoxLayout()
+        button_row.setSpacing(10)
+
+        overwrite_btn = QPushButton("Ghi đè")
+        overwrite_btn.setCursor(Qt.PointingHandCursor)
+        overwrite_btn.setFixedHeight(CONTROL_HEIGHT)
+        overwrite_btn.setStyleSheet(_primary_button_style())
+        overwrite_btn.clicked.connect(self._on_overwrite)
+        button_row.addWidget(overwrite_btn, stretch=1)
+
+        rename_btn = QPushButton("Đổi tên khác")
+        rename_btn.setCursor(Qt.PointingHandCursor)
+        rename_btn.setFixedHeight(CONTROL_HEIGHT)
+        rename_btn.setStyleSheet(_action_button_style())
+        rename_btn.clicked.connect(self._on_rename)
+        button_row.addWidget(rename_btn, stretch=1)
+
+        cancel_btn = QPushButton("Hủy")
+        cancel_btn.setCursor(Qt.PointingHandCursor)
+        cancel_btn.setFixedHeight(CONTROL_HEIGHT)
+        cancel_btn.setStyleSheet(_action_button_style())
+        cancel_btn.clicked.connect(self._on_cancel)
+        button_row.addWidget(cancel_btn, stretch=1)
+
+        root.addLayout(button_row)
+
+    def _on_overwrite(self) -> None:
+        self.result_action = self.ACTION_OVERWRITE
+        self.accept()
+
+    def _on_rename(self) -> None:
+        self.result_action = self.ACTION_RENAME
+        self.accept()
+
+    def _on_cancel(self) -> None:
+        self.result_action = self.ACTION_CANCEL
+        self.reject()
+
+    @classmethod
+    def ask(cls, parent: QWidget, filename: str) -> str:
+        dialog = cls(filename, parent)
+        dialog.exec()
+        return dialog.result_action
+
+
 # ----------------------------------------------------------------------
 # A3 — 1 ô trong lưới thumbnail: thumbnail ảnh thật + trạng thái đánh dấu xóa / cut /
 # đích Move. Khi chế độ "Xóa" bật, chuột phải sẽ toggle đánh dấu xóa thay vì mở menu.
 # ----------------------------------------------------------------------
 class _EditPageThumbnail(QWidget):
-    clicked = Signal(object)  # emit(self) — chọn trang xem preview / chọn vị trí đích khi đang Move
-    rotate_requested = Signal(object, str)  # emit(self, "left" | "right")
-    move_requested = Signal(object)  # emit(self) — self muốn trở thành nguồn Move ("cut")
-    move_confirm_requested = Signal(object)  # emit(self) — self đang giữ vạch đỏ, xác nhận "Move đến đây"
-    move_cancel_requested = Signal()  # hủy Move giữa chừng (không cần biết bấm từ thumbnail nào)
-    mark_toggled = Signal(object)  # emit(self) — vừa toggle đánh dấu Xóa (viền đỏ) qua chuột phải
+    clicked = Signal(object)
+    rotate_requested = Signal(object, str)
+    move_requested = Signal(object)
+    move_confirm_requested = Signal(object)
+    move_cancel_requested = Signal()
+    mark_toggled = Signal(object)
 
     def __init__(self, original_id: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.original_id = original_id  # source_index GỐC (0-based) trong file PDF — CỐ ĐỊNH,
-        # không đổi khi Move; dùng làm page_id cho PageEditSession + key render PageRenderer.
-        self.page_number = original_id + 1  # vị trí hiển thị hiện tại (1..N) — cập nhật mỗi khi Move
+        self.original_id = original_id
+        self.page_number = original_id + 1
         self.is_selected = False
-        self.is_flagged = False  # đang được đánh dấu để xóa
+        self.is_flagged = False
         self.delete_mode = False
-        self.is_cut = False  # đang là nguồn của 1 lượt Move ("cắt" — mờ xám kiểu Cut Windows)
-        self.is_move_target = False  # đang giữ "vạch đỏ" — vị trí sẽ chèn trang cut vào ngay sau nó
-        self._move_active = False  # có 1 lượt Move (không nhất thiết của chính trang này) đang chạy
+        self.is_cut = False
+        self.is_move_target = False
+        self._move_active = False
         self.setCursor(Qt.PointingHandCursor)
 
         row_layout = QHBoxLayout(self)
@@ -228,13 +338,11 @@ class _EditPageThumbnail(QWidget):
         card_layout.setContentsMargins(0, 0, 0, 4)
         card_layout.setSpacing(0)
 
-        # Ảnh render thật của trang (thay cho số mock trước đây) — cập nhật qua set_image().
         self.image_label = QLabel()
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setStyleSheet("background: transparent; border: none;")
         card_layout.addWidget(self.image_label, stretch=1)
 
-        # Nhãn chỉ hiện khi trang này đang giữ "vạch đỏ" (đích sẽ chèn trang cut vào ngay sau nó).
         self.move_target_label = QLabel("▼ Chèn vào đây")
         self.move_target_label.setAlignment(Qt.AlignCenter)
         self.move_target_label.setStyleSheet(
@@ -244,7 +352,6 @@ class _EditPageThumbnail(QWidget):
         self.move_target_label.hide()
         card_layout.addWidget(self.move_target_label)
 
-        # Badge góc xoay — chỉ hiện chữ khi trang đã bị xoay (VD "90°", "270°").
         self.rotation_badge = QLabel("")
         self.rotation_badge.setAlignment(Qt.AlignCenter)
         self.rotation_badge.setStyleSheet(
@@ -255,11 +362,8 @@ class _EditPageThumbnail(QWidget):
 
         row_layout.addWidget(self.card)
 
-        # Badge vị trí hiện tại — nhãn nổi, geometry tuyệt đối cố định góc trên-trái của
-        # card, nền tối trong suốt, chữ trắng, bo góc — luôn hiển thị, đè lên trên mọi nội
-        # dung khác trong card. Đây là phần ĐƯỢC đánh số lại 1..N sau mỗi lần Move/Undo/Redo/
-        # Xóa (khác original_id — nội dung trang thật, cố định vĩnh viễn).
-        self.position_badge = QLabel(f"#{self.page_number}", self.card)
+        # Badge vị trí hiện tại — CHỈ hiển thị số (đã bỏ ký tự "#" theo yêu cầu).
+        self.position_badge = QLabel(str(self.page_number), self.card)
         self.position_badge.setAlignment(Qt.AlignCenter)
         self.position_badge.setStyleSheet(
             "background-color: rgba(15, 23, 42, 0.78); color: white; "
@@ -270,8 +374,6 @@ class _EditPageThumbnail(QWidget):
         self.position_badge.raise_()
 
     def _apply_card_style(self) -> None:
-        # Thứ tự ưu tiên hiển thị khi nhiều trạng thái "lý thuyết" trùng nhau:
-        # đang cut > đang là đích Move > đã đánh dấu xóa > đang chọn (preview) > bình thường.
         if self.is_cut:
             border = f"2px dashed {COLOR_BORDER_STRONG}"
             background = "#F3F4F6"
@@ -326,15 +428,12 @@ class _EditPageThumbnail(QWidget):
         self._move_active = active
 
     def set_page_number(self, number: int) -> None:
-        # Chỉ cập nhật vị trí hiển thị (badge góc trên) — KHÔNG đổi original_id (nội dung
-        # trang thật, cố định vĩnh viễn qua các lần Move).
         self.page_number = number
-        self.position_badge.setText(f"#{number}")
+        self.position_badge.setText(str(number))
         self.position_badge.adjustSize()
         self.position_badge.raise_()
 
     def set_image(self, png_bytes: bytes) -> None:
-        """Nạp ảnh PNG render thật (đã bao gồm pending_rotation) vào thumbnail."""
         pixmap = QPixmap()
         pixmap.loadFromData(png_bytes)
         if pixmap.isNull():
@@ -354,16 +453,12 @@ class _EditPageThumbnail(QWidget):
 
     def contextMenuEvent(self, event) -> None:
         if self.delete_mode:
-            # Chế độ Xóa: chuột phải toggle đánh dấu trực tiếp, không mở menu.
             self.set_flagged(not self.is_flagged)
             self.mark_toggled.emit(self)
             event.accept()
             return
 
         if self.is_flagged:
-            # Trang đã đánh dấu Xóa (từ trước, lúc checkbox đang bật) — chuột phải không còn
-            # tác dụng gì nữa (không Xoay, không Move/Move đến đây/Hủy Move) cho tới khi được
-            # bỏ đánh dấu (bật lại checkbox "Xóa" rồi chuột phải toggle như trên).
             event.ignore()
             return
 
@@ -371,9 +466,7 @@ class _EditPageThumbnail(QWidget):
         menu.setStyleSheet(_CONTEXT_MENU_QSS)
 
         if self._move_active:
-            # Đang có 1 lượt Move chạy trong toàn bộ lưới (không nhất thiết là chính trang này).
             if self.is_cut:
-                # Đây chính là trang nguồn đang "cut" — chỉ cho phép Hủy Move.
                 cancel_action = menu.addAction(
                     qta.icon("mdi6.close-thick", color=COLOR_ERROR), "Hủy Move"
                 )
@@ -385,7 +478,6 @@ class _EditPageThumbnail(QWidget):
             confirm_action = menu.addAction(
                 qta.icon("mdi6.check-bold", color=COLOR_ACCENT), "Move đến đây"
             )
-            # Chỉ cho xác nhận đúng tại thumbnail đang giữ vạch đỏ (bắt buộc đã click trái chọn trước).
             confirm_action.setEnabled(self.is_move_target)
             cancel_action = menu.addAction(
                 qta.icon("mdi6.close-thick", color=COLOR_ERROR), "Hủy Move"
@@ -397,7 +489,6 @@ class _EditPageThumbnail(QWidget):
                 self.move_cancel_requested.emit()
             return
 
-        # Chế độ bình thường: không có lượt Move nào đang chạy, trang chưa bị đánh dấu Xóa.
         rotate_left_action = menu.addAction(
             qta.icon("mdi6.rotate-left", color=COLOR_TEXT_PRIMARY), "Xoay trái 90°"
         )
@@ -417,10 +508,6 @@ class _EditPageThumbnail(QWidget):
             self.move_requested.emit(self)
 
 
-# ----------------------------------------------------------------------
-# Vạch đích "đầu file" — vị trí đặc biệt để Move 1 trang về trước trang 1.
-# Luôn hiển thị cố định phía trên lưới thumbnail; chỉ có tác dụng bấm khi đang Move.
-# ----------------------------------------------------------------------
 class _MoveHeadMarker(QFrame):
     clicked = Signal()
     confirm_requested = Signal()
@@ -470,9 +557,6 @@ class _MoveHeadMarker(QFrame):
             self.cancel_requested.emit()
 
 
-# ----------------------------------------------------------------------
-# Checkbox tùy chỉnh (giữ nguyên style từ Split)
-# ----------------------------------------------------------------------
 class _CheckToggle(QToolButton):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -507,11 +591,6 @@ class _CheckToggle(QToolButton):
             )
 
 
-# ----------------------------------------------------------------------
-# Cột B — QScrollArea hỗ trợ kéo bằng chuột trái (pan) khi nội dung vượt khung,
-# và phát tín hiệu khi kích thước viewport đổi để widget cha tính lại chiều rộng
-# trang preview cho vừa khung (responsive fit-width). Đồng bộ với split_widget.py.
-# ----------------------------------------------------------------------
 class _PannablePreviewScrollArea(QScrollArea):
     viewport_resized = Signal()
 
@@ -562,9 +641,6 @@ class _PannablePreviewScrollArea(QScrollArea):
         super().mouseReleaseEvent(event)
 
 
-# ----------------------------------------------------------------------
-# A1 — Khối chọn file (chỉ 1 file)
-# ----------------------------------------------------------------------
 class _DropZone(QFrame):
     file_selected = Signal(str)
 
@@ -654,16 +730,14 @@ class _DropZone(QFrame):
                 self.file_selected.emit(path)
 
 
-# ----------------------------------------------------------------------
-# Widget chính
-# ----------------------------------------------------------------------
 class EditFeatureWidget(QWidget):
-    """Giao diện tính năng Edit File — đã nối logic PDF thật (pdf_core.PageEditSession)
-    và Undo/Redo thật (src.undo_manager.UndoManager)."""
+    """Giao diện tính năng Edit File — đã nối logic PDF thật (pdf_core.PageEditSession),
+    Undo/Redo thật (src.undo_manager.UndoManager), dialog trùng tên tự vẽ đồng bộ Gộp
+    file, tự mở thư mục sau khi lưu, và tự động dọn trang đánh dấu Xóa còn sót khi lưu."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFocusPolicy(Qt.StrongFocus)  # cần để bắt phím Delete khi đang bật chế độ Xóa
+        self.setFocusPolicy(Qt.StrongFocus)
 
         self._selected_file_path: Optional[str] = None
         self._session: Optional[pdf_core.PageEditSession] = None
@@ -672,19 +746,14 @@ class EditFeatureWidget(QWidget):
 
         self._thumbnails: List[_EditPageThumbnail] = []
         self._preview_frames: List[QFrame] = []
-        # Tra cứu widget theo original_id (source_index gốc) — widget được tạo 1 lần
-        # cho mỗi trang khi mở file, chỉ bị gỡ khỏi layout (không hủy) khi trang bị Xóa,
-        # để Undo/Redo có thể phục hồi lại đúng widget cũ mà không cần render lại từ đầu.
         self._thumb_by_id: Dict[int, _EditPageThumbnail] = {}
         self._frame_by_id: Dict[int, QFrame] = {}
 
-        # --- Trạng thái của 1 lượt Move đang chạy (None nếu không có lượt nào) ---
         self._move_source_thumb: Optional[_EditPageThumbnail] = None
-        self._move_target_after: Optional[int] = None  # 0 = đầu file; k = ngay sau vị trí k
+        self._move_target_after: Optional[int] = None
         self._move_target_thumb: Optional[_EditPageThumbnail] = None
         self._move_target_is_head: bool = False
 
-        # --- Zoom Cột B ---
         self._zoom_level: float = _ZOOM_DEFAULT
         self._current_preview_width: Optional[int] = None
         self._initial_width_applied = False
@@ -697,12 +766,10 @@ class EditFeatureWidget(QWidget):
         column_a = QVBoxLayout()
         column_a.setSpacing(14)
 
-        # --- A1: chọn file ---
         self.drop_zone = _DropZone()
         self.drop_zone.file_selected.connect(self._on_file_selected)
         column_a.addWidget(self.drop_zone)
 
-        # --- Khung bao toàn bộ khu vực A3 (Header tiêu đề + vạch đầu file + Lưới Thumbnail) ---
         a3_container = QFrame()
         a3_container.setStyleSheet(
             f"""
@@ -718,7 +785,6 @@ class EditFeatureWidget(QWidget):
         a3_box_layout.setContentsMargins(0, 0, 0, 0)
         a3_box_layout.setSpacing(0)
 
-        # Header Tiêu đề A3 trong khung bao (Icon đen + Text)
         a3_header = QWidget()
         a3_header_layout = QHBoxLayout(a3_header)
         a3_header_layout.setContentsMargins(16, 12, 16, 12)
@@ -737,7 +803,6 @@ class EditFeatureWidget(QWidget):
         a3_header_layout.addWidget(self.a3_title_label, stretch=1)
         a3_box_layout.addWidget(a3_header)
 
-        # Vạch đích "đầu file" — luôn hiển thị, chỉ có tác dụng bấm/chuột phải khi đang Move.
         head_marker_wrap = QWidget()
         head_marker_wrap.setStyleSheet("background: transparent;")
         head_marker_layout = QHBoxLayout(head_marker_wrap)
@@ -752,7 +817,6 @@ class EditFeatureWidget(QWidget):
         head_marker_layout.addWidget(self.head_marker)
         a3_box_layout.addWidget(head_marker_wrap)
 
-        # A3: khung lưới thumbnail
         self.preview_scroll = QScrollArea()
         self.preview_scroll.setWidgetResizable(True)
         self.preview_scroll.setStyleSheet(
@@ -774,12 +838,10 @@ class EditFeatureWidget(QWidget):
 
         column_a.addWidget(a3_container, stretch=1)
 
-        # --- Hàng dưới cùng: [Xóa + checkbox] — [Undo + Redo] — [Clear] — [Lưu File] ---
         bottom_row = QHBoxLayout()
         bottom_row.setSpacing(0)
         bottom_row.setContentsMargins(0, 0, 0, 0)
 
-        # Nhóm 1: Xóa + checkbox
         delete_group = QWidget()
         delete_group.setFixedHeight(CONTROL_HEIGHT)
         delete_group.setStyleSheet(
@@ -817,7 +879,6 @@ class EditFeatureWidget(QWidget):
         self.delete_checkbox.toggled.connect(self._on_delete_mode_toggled)
         bottom_row.addWidget(delete_group, stretch=1)
 
-        # Nhóm 2: Undo + Redo
         undo_group = QWidget()
         undo_group_layout = QHBoxLayout(undo_group)
         undo_group_layout.setContentsMargins(0, 0, 0, 0)
@@ -844,7 +905,6 @@ class EditFeatureWidget(QWidget):
 
         bottom_row.addWidget(undo_group, stretch=2)
 
-        # Nhóm 3: Clear
         clear_group = QWidget()
         clear_group_layout = QHBoxLayout(clear_group)
         clear_group_layout.setContentsMargins(0, 0, 0, 0)
@@ -860,7 +920,6 @@ class EditFeatureWidget(QWidget):
         clear_group_layout.addWidget(self.clear_button)
         bottom_row.addWidget(clear_group, stretch=1)
 
-        # Nhóm 4: Lưu File
         save_group = QWidget()
         save_group_layout = QHBoxLayout(save_group)
         save_group_layout.setContentsMargins(0, 0, 0, 0)
@@ -871,21 +930,7 @@ class EditFeatureWidget(QWidget):
         self.save_button.setCursor(Qt.PointingHandCursor)
         self.save_button.setFixedHeight(CONTROL_HEIGHT)
         self.save_button.setMinimumWidth(120)
-        self.save_button.setStyleSheet(
-            f"""
-            QPushButton {{
-                background-color: {COLOR_ACCENT};
-                color: white;
-                border: none;
-                border-radius: {CORNER_RADIUS}px;
-                font-size: 13px;
-                font-weight: 700;
-                padding: 0 16px;
-            }}
-            QPushButton:hover {{ background-color: #E28104; }}
-            QPushButton:pressed {{ background-color: #C87203; }}
-            """
-        )
+        self.save_button.setStyleSheet(_primary_button_style())
         self.save_button.clicked.connect(self._on_save_clicked)
         save_group_layout.addWidget(self.save_button)
         bottom_row.addWidget(save_group, stretch=1)
@@ -898,7 +943,7 @@ class EditFeatureWidget(QWidget):
         self.result_label.hide()
         column_a.addWidget(self.result_label)
 
-        # ================= CỘT B (~45%) — Preview cuộn liên tục =================
+        # ================= CỘT B (~45%) =================
         column_b = QVBoxLayout()
         column_b.setSpacing(0)
 
@@ -989,7 +1034,6 @@ class EditFeatureWidget(QWidget):
         preview_box_layout.addWidget(self.preview_scroll_b, stretch=1)
         column_b.addWidget(preview_box_container, stretch=1)
 
-        # Ghép 2 cột theo tỉ lệ 55/45
         column_a_widget = QWidget()
         column_a_widget.setLayout(column_a)
         column_b_widget = QWidget()
@@ -1004,8 +1048,6 @@ class EditFeatureWidget(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        # Lần hiển thị đầu tiên SAU KHI đã có trang: tính lại chiều rộng trang cho khớp
-        # khung Cột B thật sự (viewport().width() chỉ đọc đúng sau khi widget đã show).
         if not self._initial_width_applied and self._preview_frames:
             self._initial_width_applied = True
             self._current_preview_width = None
@@ -1013,13 +1055,11 @@ class EditFeatureWidget(QWidget):
 
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key_Delete and self.delete_checkbox.isChecked():
-            self._delete_marked_pages()
+            self._on_delete_key_pressed_from_ui()
             event.accept()
             return
         super().keyPressEvent(event)
 
-    # ------------------------------------------------------------------
-    # Xây lưới thumbnail / preview THẬT từ PageEditSession đang mở
     # ------------------------------------------------------------------
     def _build_grid_from_session(self) -> None:
         order = self._session.page_order
@@ -1094,9 +1134,6 @@ class EditFeatureWidget(QWidget):
         self._preview_frames = []
 
     # ------------------------------------------------------------------
-    # Render ảnh thật (thumbnail + preview) theo trạng thái pending_rotation
-    # hiện tại của PageEditSession
-    # ------------------------------------------------------------------
     def _refresh_thumb_image(self, thumb: _EditPageThumbnail) -> None:
         if self._session is None or not self._selected_file_path:
             return
@@ -1127,8 +1164,6 @@ class EditFeatureWidget(QWidget):
         for frame in self._frame_by_id.values():
             self._refresh_frame_image(frame)
 
-    # ------------------------------------------------------------------
-    # Zoom + Pan cho khu vực Xem trước (Cột B) — đồng bộ với split_widget.py
     # ------------------------------------------------------------------
     def _fit_base_width(self) -> int:
         viewport_width = self.preview_scroll_b.viewport().width()
@@ -1182,8 +1217,6 @@ class EditFeatureWidget(QWidget):
             self._apply_preview_zoom()
 
     # ------------------------------------------------------------------
-    # Undo/Redo — cập nhật trạng thái nút
-    # ------------------------------------------------------------------
     def _update_undo_redo_buttons(self) -> None:
         has_session = self._session is not None
         no_move_running = self._move_source_thumb is None
@@ -1191,8 +1224,6 @@ class EditFeatureWidget(QWidget):
         self.redo_button.setEnabled(has_session and no_move_running and self._undo.can_redo())
 
     def _apply_snapshot_to_ui(self, snapshot: dict) -> None:
-        """Ghi đè PageEditSession + dựng lại toàn bộ UI (thứ tự/ảnh/badge/viền đỏ) theo
-        đúng 1 snapshot (dùng chung cho cả Undo và Redo)."""
         if self._session is None:
             return
         self._session.restore(snapshot)
@@ -1210,8 +1241,6 @@ class EditFeatureWidget(QWidget):
         self._refresh_all_frame_images()
         self._select_page(1 if self._thumbnails else None)
 
-    # ------------------------------------------------------------------
-    # Sự kiện — Chọn file / Xóa / Chọn trang / Xoay
     # ------------------------------------------------------------------
     def _on_file_selected(self, path: str) -> None:
         try:
@@ -1250,19 +1279,14 @@ class EditFeatureWidget(QWidget):
         self.setFocus()
 
     def _on_delete_mode_toggled(self, checked: bool) -> None:
-        # Chỉ chuyển trạng thái tương tác. Các trang đã đánh dấu phải được giữ nguyên
-        # để người dùng có thể tắt Xóa và tiếp tục xoay trang trước khi lưu.
         if self._move_source_thumb is not None:
-            # An toàn: checkbox bị disable trong lúc đang Move nên nhánh này không nên xảy ra.
             return
         for thumb in self._thumbnails:
             thumb.set_delete_mode(checked)
         if checked:
-            self.setFocus()  # để phím Delete hoạt động ngay sau khi bật chế độ Xóa
+            self.setFocus()
 
     def _on_mark_toggled(self, thumb: _EditPageThumbnail) -> None:
-        # Chỉ đồng bộ trạng thái "đang đánh dấu" (viền đỏ) vào PageEditSession — CHƯA
-        # tính là 1 bước Undo (chỉ thao tác Xóa thật qua phím Delete mới đăng ký Undo).
         if self._session is None:
             return
         self._session.toggle_mark(thumb.original_id)
@@ -1270,12 +1294,9 @@ class EditFeatureWidget(QWidget):
     def _on_thumbnail_clicked(self, thumb: _EditPageThumbnail) -> None:
         if self._move_source_thumb is not None:
             if thumb is self._move_source_thumb or thumb.is_flagged:
-                # Không thể chọn chính trang đang cut, hoặc 1 trang đã đánh dấu Xóa, làm đích
-                # (trang đã đánh dấu Xóa không còn phản hồi chuột phải nên không thể xác nhận).
                 return
             self._set_move_target(thumb)
             return
-        # Chuột trái ở chế độ bình thường: chỉ dùng để chọn trang xem preview.
         self._select_page(thumb.page_number)
 
     def _on_rotate_requested(self, thumb: _EditPageThumbnail, direction: str) -> None:
@@ -1296,11 +1317,8 @@ class EditFeatureWidget(QWidget):
         self._show_success(f"Đã xoay {huong} 90° trang #{thumb.page_number}.")
 
     # ------------------------------------------------------------------
-    # Sự kiện — Cơ chế Move (sắp xếp lại trang)
-    # ------------------------------------------------------------------
     def _on_move_requested(self, thumb: _EditPageThumbnail) -> None:
         if self._move_source_thumb is not None or thumb.is_flagged:
-            # An toàn: không mở lượt Move mới khi đang có lượt khác chạy, hoặc trang đã đánh dấu xóa.
             return
         self._move_source_thumb = thumb
         self._move_target_after = None
@@ -1324,7 +1342,6 @@ class EditFeatureWidget(QWidget):
         self._set_move_target(None)
 
     def _set_move_target(self, thumb: Optional[_EditPageThumbnail]) -> None:
-        # Bỏ highlight vạch đỏ ở vị trí cũ (nếu có) trước khi đặt vị trí mới.
         if self._move_target_thumb is not None:
             self._move_target_thumb.set_move_target(False)
         if self._move_target_is_head:
@@ -1345,7 +1362,6 @@ class EditFeatureWidget(QWidget):
     def _on_move_confirm_requested(self, thumb: Optional[_EditPageThumbnail]) -> None:
         if self._move_source_thumb is None or self._move_target_after is None:
             return
-        # Bắt buộc xác nhận đúng tại vị trí đang giữ vạch đỏ (không gộp bước chọn vị trí và xác nhận).
         if thumb is None:
             if not self._move_target_is_head:
                 return
@@ -1366,8 +1382,6 @@ class EditFeatureWidget(QWidget):
         old_pos = source.page_number
         n = len(self._thumbnails)
 
-        # Tính hoán vị vị trí mới: bỏ vị trí cũ ra khỏi dãy 1..N rồi chèn lại ngay sau target_after
-        # (0 = đầu file). Sau vòng lặp, positions[i] = vị trí CŨ của trang sẽ nằm ở vị trí MỚI i+1.
         positions = [p for p in range(1, n + 1) if p != old_pos]
         insert_at = 0 if target_after == 0 else positions.index(target_after) + 1
         positions.insert(insert_at, old_pos)
@@ -1411,8 +1425,6 @@ class EditFeatureWidget(QWidget):
         self._update_undo_redo_buttons()
 
     def _force_reset_move_state(self) -> None:
-        # Dùng khi Clear/đổi file: các thumbnail cũ sắp bị deleteLater() nên chỉ cần xóa biến
-        # trạng thái, không cần gọi set_cut/set_move_target lên các widget sắp bị hủy.
         self._move_source_thumb = None
         self._move_target_after = None
         self._move_target_thumb = None
@@ -1423,14 +1435,12 @@ class EditFeatureWidget(QWidget):
         self._update_undo_redo_buttons()
 
     def _renumber_and_relayout(self) -> None:
-        # Đánh lại số thứ tự liên tục 1..N theo vị trí mới (không giữ số trang gốc),
-        # rồi dựng lại lưới Cột A và ngăn xếp cuộn Cột B theo đúng thứ tự đó.
         for idx, thumb in enumerate(self._thumbnails):
             thumb.set_page_number(idx + 1)
-            thumb.show()  # phòng trường hợp trang vừa được Undo phục hồi lại từ trạng thái Xóa (đang ẩn)
+            thumb.show()
 
         while self.thumb_grid.count():
-            self.thumb_grid.takeAt(0)  # chỉ gỡ khỏi layout, KHÔNG hủy widget — giữ nguyên trạng thái
+            self.thumb_grid.takeAt(0)
         for idx, thumb in enumerate(self._thumbnails):
             row, col = divmod(idx, _GRID_COLUMNS)
             self.thumb_grid.addWidget(thumb, row, col)
@@ -1444,17 +1454,16 @@ class EditFeatureWidget(QWidget):
             frame._position_label.setText(f"Vị trí #{idx + 1}")
 
     # ------------------------------------------------------------------
-    # Sự kiện — Xóa trang (phím Delete) — chỉ đây mới đăng ký 1 bước Undo thật
-    # ------------------------------------------------------------------
-    def _delete_marked_pages(self) -> None:
+    def _delete_marked_pages(self) -> bool:
+        """Xóa thật các trang đang đánh dấu khỏi lưới (PageEditSession.delete_marked())
+        + đăng ký 1 bước Undo. Trả về True nếu có xóa thật sự (có ít nhất 1 trang được
+        đánh dấu), False nếu không có gì để xóa — dùng cho cả phím Delete VÀ luồng tự
+        động dọn khi bấm Lưu File (mục 5 yêu cầu của đại ca)."""
         if self._session is None:
-            return
+            return False
         marked_thumbs = [t for t in self._thumbnails if t.is_flagged]
         if not marked_thumbs:
-            self._show_error(
-                "Chưa đánh dấu trang nào để xóa (chuột phải vào trang muốn xóa khi đang bật chế độ Xóa)."
-            )
-            return
+            return False
 
         before = self._session.snapshot()
         self._session.delete_marked()
@@ -1468,10 +1477,9 @@ class EditFeatureWidget(QWidget):
 
         preview_layout = self.preview_scroll_b.widget().layout()
         for t in marked_thumbs:
-            t.set_flagged(False)  # nếu Undo phục hồi lại, trạng thái đánh dấu sẽ được set lại
-            # đúng theo snapshot trong _apply_snapshot_to_ui — không cần giữ viền đỏ ở đây.
+            t.set_flagged(False)
             self.thumb_grid.removeWidget(t)
-            t.hide()  # KHÔNG deleteLater() — có thể được Undo phục hồi lại
+            t.hide()
             frame = self._frame_by_id.get(t.original_id)
             if frame is not None:
                 preview_layout.removeWidget(frame)
@@ -1480,9 +1488,16 @@ class EditFeatureWidget(QWidget):
         self._renumber_and_relayout()
         self._select_page(1 if self._thumbnails else None)
         self._show_success(f"Đã xóa {len(marked_thumbs)} trang khỏi lưới (chưa ghi ra file).")
+        return True
 
-    # ------------------------------------------------------------------
-    # Sự kiện — Undo / Redo / Clear / Lưu File
+    def _on_delete_key_pressed_from_ui(self) -> None:
+        # Giữ lại thông báo lỗi riêng cho phím Delete (khác luồng tự động khi Lưu File —
+        # luồng đó không cần báo lỗi vì "không có gì để xóa" là trường hợp bình thường).
+        if not self._delete_marked_pages():
+            self._show_error(
+                "Chưa đánh dấu trang nào để xóa (chuột phải vào trang muốn xóa khi đang bật chế độ Xóa)."
+            )
+
     # ------------------------------------------------------------------
     def _on_undo_clicked(self) -> None:
         if self._session is None:
@@ -1529,6 +1544,13 @@ class EditFeatureWidget(QWidget):
             target = self._preview_frames[page_number - 1]
             self.preview_scroll_b.ensureWidgetVisible(target, 0, 0)
 
+    # ------------------------------------------------------------------
+    def _open_containing_folder(self, file_path: str) -> None:
+        """Tự động mở thư mục chứa file kết quả sau khi lưu thành công — giống hệt cơ
+        chế của Tách file/Chèn file."""
+        folder = os.path.dirname(os.path.abspath(file_path)) or "."
+        QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+
     def _on_save_clicked(self) -> None:
         if not self._selected_file_path or self._session is None:
             self._show_error("Vui lòng chọn file PDF trước khi lưu.")
@@ -1538,17 +1560,52 @@ class EditFeatureWidget(QWidget):
                 "Đang có 1 trang ở trạng thái Move dở dang, vui lòng hoàn tất hoặc Hủy Move trước khi lưu."
             )
             return
+
+        # Yêu cầu #5: dù người dùng đã bấm phím Delete hay chưa, hễ còn trang nào đang
+        # đánh dấu Xóa lúc bấm Lưu File thì tự động xóa hẳn trước khi ghi — không báo lỗi
+        # ở đây vì "không có gì để xóa" là trạng thái bình thường trong luồng Lưu File.
+        self._delete_marked_pages()
+
         if not self._session.page_order:
-            self._show_error("Không còn trang nào để lưu — vui lòng Undo lại thao tác Xóa hoặc chọn file khác.")
+            self._show_error(
+                "Không còn trang nào để lưu — vui lòng Undo lại thao tác Xóa hoặc chọn file khác."
+            )
             return
 
         base_name, _ext = os.path.splitext(os.path.basename(self._selected_file_path))
         default_name = f"{base_name}_edited.pdf"
+        default_dir = os.path.dirname(self._selected_file_path)
+        default_path = os.path.join(default_dir, default_name) if default_dir else default_name
+
         save_path, _ = QFileDialog.getSaveFileName(
-            self, "Lưu file đã chỉnh sửa", default_name, "PDF Files (*.pdf)"
+            self,
+            "Lưu file đã chỉnh sửa",
+            default_path,
+            "PDF Files (*.pdf)",
+            options=QFileDialog.Option.DontConfirmOverwrite,
         )
         if not save_path:
             return
+
+        # Hộp thoại trùng tên tự vẽ (3 lựa chọn) thay cho cảnh báo mặc định của Windows —
+        # lặp lại nếu người dùng chọn "Đổi tên khác" mà tên mới vẫn trùng.
+        while os.path.exists(save_path):
+            action = _OverwriteConfirmDialog.ask(self, os.path.basename(save_path))
+            if action == _OverwriteConfirmDialog.ACTION_OVERWRITE:
+                break
+            elif action == _OverwriteConfirmDialog.ACTION_RENAME:
+                save_path, _ = QFileDialog.getSaveFileName(
+                    self,
+                    "Lưu file đã chỉnh sửa",
+                    save_path,
+                    "PDF Files (*.pdf)",
+                    options=QFileDialog.Option.DontConfirmOverwrite,
+                )
+                if not save_path:
+                    return
+                continue
+            else:  # Hủy
+                return
 
         try:
             output_path = self._session.apply(save_path)
@@ -1562,6 +1619,7 @@ class EditFeatureWidget(QWidget):
         self._undo.clear()
         self._update_undo_redo_buttons()
         self._show_success(f"Đã lưu file thành công: {output_path}")
+        self._open_containing_folder(output_path)
 
     # ------------------------------------------------------------------
     def _show_success(self, message: str) -> None:

@@ -737,14 +737,38 @@ def _apply_opacity_to_pixmap(pixmap: "fitz.Pixmap", opacity: float) -> "fitz.Pix
     return fitz.Pixmap(pixmap.colorspace, pixmap.width, pixmap.height, bytes(samples), True)
 
 
-def _rotate_image_to_bytes(image_path: str, rotation_degrees: float,
-                            opacity: float) -> Tuple[bytes, float, float]:
+def _rotate_image_to_pixmap(image_path: str, rotation_degrees: float,
+                             opacity: float) -> "fitz.Pixmap":
     """'Bake' góc xoay tuỳ ý + opacity vào ảnh bằng chính PyMuPDF (không dùng Pillow —
-    đúng quy ước dự án). Trả về (PNG bytes đã xử lý, width mới, height mới).
+    đúng quy ước dự án). Trả về thẳng đối tượng `fitz.Pixmap` đã xoay/áp opacity (KHÔNG
+    còn trả PNG bytes như bản trước — xem lý do ở điểm 2 bên dưới).
 
     Kỹ thuật (07_...md mục 1.4.2): dựng 1 trang PDF tạm chỉ chứa ảnh gốc, sau đó render
     lại trang này qua `get_pixmap(matrix=...)` với ma trận đã prerotate — giữ nguyên
-    alpha xuyên suốt để nền không bị trắng đè lên."""
+    alpha xuyên suốt để nền không bị trắng đè lên.
+
+    HAI ĐIỂM ĐÃ SỬA (phát hiện qua kiểm thử thực tế bằng PyMuPDF + đối chiếu render độc
+    lập bằng Poppler `pdftoppm`, sau khi đại ca báo watermark ảnh bị sai cả góc xoay lẫn
+    màu sắc so với Text — xem trao đổi ngày cập nhật gần nhất):
+
+    1. **ĐẢO DẤU góc xoay trước khi đưa vào `Matrix.prerotate()`** (dòng
+       `rotate_matrix = ...prerotate(-rotation_degrees)` bên dưới). Đã kiểm chứng bằng
+       script test độc lập: `TextWriter.morph` (dùng cho Text) và
+       `Page.get_pixmap(matrix=...)` (dùng để bake ảnh) tuy cùng nhận vào 1
+       `fitz.Matrix.prerotate(+D)` nhưng lại xoay THEO 2 HƯỚNG NGƯỢC NHAU trên trang —
+       Text với +30° lệch ngược chiều kim đồng hồ (khớp đúng preview Qt), còn ảnh với
+       CÙNG +30° lại lệch THUẬN chiều kim đồng hồ. Đây chính là nguyên nhân ảnh bị "sai
+       góc quay" trong khi Text vẫn đúng. Đảo dấu ở đây để ảnh xoay cùng chiều với Text
+       và preview, dùng đúng 1 quy ước `config.rotation` cho cả 2 loại watermark.
+    2. **Trả thẳng `Pixmap` thay vì PNG bytes** — bản trước gọi thêm
+       `rotated_pixmap.tobytes("png")` rồi `draw_image_watermark_centered` chèn bằng
+       `stream=`. Test riêng cho thấy `Pixmap.save()`/`tobytes("png")` của PyMuPDF ghi
+       PNG với RGB đã bị nhân sẵn alpha (premultiplied) nhưng header PNG vẫn khai
+       "non-premultiplied" — không đúng chuẩn PNG, dù trong trường hợp cụ thể đã test
+       (khối màu đặc + xoay, đối chiếu Poppler) chưa thấy sai lệch màu thật sự trong file
+       PDF cuối do PyMuPDF tự nhất quán khi tách RGB/SMask lúc nhúng ảnh vào PDF. Để an
+       toàn về lâu dài (không phụ thuộc hành vi nội bộ này của PyMuPDF ở các phiên bản
+       khác), bỏ hẳn bước mã hoá PNG trung gian, chèn thẳng đối tượng Pixmap."""
     try:
         pixmap_src = fitz.Pixmap(image_path)
     except Exception as exc:
@@ -759,14 +783,14 @@ def _rotate_image_to_bytes(image_path: str, rotation_degrees: float,
         tmp_page = tmp_doc.new_page(width=pixmap_src.width, height=pixmap_src.height)
         tmp_page.insert_image(tmp_page.rect, pixmap=pixmap_src, overlay=True)
 
-        rotate_matrix = fitz.Matrix(1, 1).prerotate(rotation_degrees)
+        # ĐẢO DẤU (-rotation_degrees) — xem điểm 1 trong docstring ở trên.
+        rotate_matrix = fitz.Matrix(1, 1).prerotate(-rotation_degrees)
         rotated_rect = tmp_page.rect * rotate_matrix
         # Dời gốc toạ độ về (0, 0) để render không bị cắt phần toạ độ âm sau khi xoay
         shift_matrix = rotate_matrix * fitz.Matrix(1, 0, 0, 1, -rotated_rect.x0, -rotated_rect.y0)
 
         rotated_pixmap = tmp_page.get_pixmap(matrix=shift_matrix, alpha=True)
-        data = rotated_pixmap.tobytes("png")
-        return data, rotated_pixmap.width, rotated_pixmap.height
+        return rotated_pixmap
     finally:
         tmp_doc.close()
 
@@ -779,14 +803,14 @@ def draw_image_watermark_centered(page: "fitz.Page", config: ImageWatermarkConfi
     THAY ĐỔI so với bản Tiling trước đó (xem chú thích ở draw_text_watermark_centered):
     chỉ chèn 1 lần duy nhất tại chính giữa trang.
 
-    Vẫn phải "bake" góc xoay vào ảnh trước (xem _rotate_image_to_bytes) vì
+    Vẫn phải "bake" góc xoay vào ảnh trước (xem _rotate_image_to_pixmap) vì
     `page.insert_image()` chỉ nhận `rotate` là bội số 90°, giống hệt lý do với Text."""
-    rotated_bytes, base_w, base_h = _rotate_image_to_bytes(
+    rotated_pixmap = _rotate_image_to_pixmap(
         config.image_path, config.rotation, config.opacity
     )
     scale = config.scale_percent / 100.0
-    item_w = base_w * scale
-    item_h = base_h * scale
+    item_w = rotated_pixmap.width * scale
+    item_h = rotated_pixmap.height * scale
 
     center_x = page.rect.width / 2
     center_y = page.rect.height / 2
@@ -794,7 +818,7 @@ def draw_image_watermark_centered(page: "fitz.Page", config: ImageWatermarkConfi
         center_x - item_w / 2, center_y - item_h / 2,
         center_x + item_w / 2, center_y + item_h / 2,
     )
-    page.insert_image(rect, stream=rotated_bytes, overlay=config.layer_over)
+    page.insert_image(rect, pixmap=rotated_pixmap, overlay=config.layer_over)
 
 
 def apply_watermark_to_pdf(path: str, output_path: str,

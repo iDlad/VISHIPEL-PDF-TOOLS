@@ -64,3 +64,13 @@
 2026-09-21 20:54:21 [INFO] Tách file thành công: 'D:/Temp/PDF_Merger.pdf' -> 6 file tại 'D:/Temp'
 2026-09-21 21:00:19 [INFO] Đặt mật khẩu thành công: D:/Temp/PDF_Split_01_protected.pdf
 2026-09-21 21:01:07 [INFO] Gỡ mật khẩu/giới hạn thành công: D:/Temp/PDF_Split_01_protected_unlocked.pdf
+2026-09-21 23:03:45 [INFO] Đặt mật khẩu thành công: D:/Temp/PDF_Merger_protected.pdf
+2026-09-21 23:04:46 [INFO] Gỡ mật khẩu/giới hạn thành công: D:/Temp/PDF_Merger_protected_unlocked.pdf
+2026-09-21 23:05:12 [INFO] Đã chèn Watermark (Text) vào 'D:/Temp/PDF_Merger.pdf' -> 'D:/Temp/PDF_Merger_Watermark.pdf'
+2026-09-21 23:05:42 [INFO] Tách file thành công: 'D:/Temp/PDF_Merger.pdf' -> 6 file tại 'D:/Temp'
+2026-09-21 23:06:26 [INFO] Đã chọn File A (Insert): D:/Temp/PDF_Split_01_edited.pdf
+2026-09-21 23:06:29 [INFO] Đã chọn File B (Insert): D:/Temp/PDF_Split_02.pdf
+2026-09-21 23:06:33 [INFO] Đã chèn trang 1 của File A vào File B tại vị trí 0
+2026-09-21 23:06:35 [INFO] Đã hoàn tác (Undo) 1 lượt chèn trang ở tính năng Chèn file
+2026-09-21 23:06:37 [INFO] Đã chèn trang 1 của File A vào File B tại vị trí 2
+2026-09-21 23:06:39 [INFO] Đã lưu file Chèn: D:/Temp/PDF_Split_02_Insert.pdf

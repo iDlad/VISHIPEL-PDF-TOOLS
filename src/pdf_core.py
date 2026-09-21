@@ -10,6 +10,7 @@ Nguyên tắc: widget UI không bao giờ tự xử lý PDF — chỉ gọi hàm
 from __future__ import annotations
 
 import os
+import secrets
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -477,7 +478,7 @@ class InsertSession:
 
 # =============================================================================
 # 6. Bảo vệ PDF (Protection) — CHỈ BỔ SUNG, không sửa mục 1-5 phía trên.
-#    Xem 07_dac_ta_chot_bao_ve_va_watermark.md mục 2.
+#    Xem 07_dac_ta_chot_bao_ve_va_watermark.md mục 2 + 02_dac_ta_tinh_nang.md mục 6.
 # =============================================================================
 
 class WrongPasswordError(Exception):
@@ -547,12 +548,42 @@ def build_protection_permissions(cam_in: bool, cam_chinh_sua: bool, cam_sao_chep
     return perm
 
 
+def _generate_owner_secret() -> str:
+    """Sinh 1 chuỗi bí mật ngẫu nhiên dùng làm Owner Password nội bộ — KHÔNG hiển thị,
+    KHÔNG lưu lại, KHÔNG cần dùng lại về sau (chỉ tồn tại trong đúng 1 lần gọi
+    protect_pdf()). Dùng `secrets` (module chuẩn Python, không phải thư viện ngoài —
+    đúng quy ước dự án chỉ dùng PySide6/PyMuPDF/PyInstaller).
+
+    LÝ DO CẦN HÀM NÀY (đã sửa sau khi đại ca phát hiện lỗi thực tế qua kiểm thử — xem
+    lịch sử trao đổi): bản chốt ban đầu ở 02_dac_ta_tinh_nang.md mục 6.2 truyền CÙNG 1
+    giá trị mật khẩu cho cả user_pw và owner_pw. Theo chuẩn PDF, phần mềm đọc PDF hợp
+    chuẩn (Acrobat, Foxit...) khi nhận 1 mật khẩu sẽ thử khớp cả 2 khoá /U và /O trong
+    file — khớp /O (Owner) thì MIỄN TRỪ HOÀN TOÀN mọi giới hạn quyền hạn (đúng tinh thần
+    chuẩn PDF: chủ sở hữu luôn được coi là không bị giới hạn trên chính file của họ).
+    Vì chỉ có đúng 1 mật khẩu duy nhất để thử, mật khẩu đó LUÔN khớp /O trước tiên →
+    3 checkbox Cấm In/Sửa/Copy hoàn toàn vô tác dụng với MỌI người mở file bằng phần mềm
+    đọc PDF chuẩn, kể cả không có ý định bẻ khóa gì cả — khác hẳn rủi ro "dùng qpdf/pikepdf
+    để cố tình gỡ" đã nêu ở mục 6.4 (rủi ro đó vẫn còn, không liên quan gì đến lỗi này).
+
+    Cách sửa: giữ user_pw = đúng mật khẩu người dùng nhập (không đổi gì ở UI/luồng nhập
+    liệu), còn owner_pw đổi thành 1 chuỗi ngẫu nhiên nội bộ khác hẳn user_pw. Người nhận
+    file chỉ có đúng 1 mật khẩu (mật khẩu đã đặt) nên luôn được xác thực là User, không
+    phải Owner → permission bits có tác dụng thật với phần mềm đọc PDF chuẩn."""
+    return secrets.token_hex(16)
+
+
 def protect_pdf(path: str, output_path: str, password: str,
                  cam_in: bool = False, cam_chinh_sua: bool = False,
                  cam_sao_chep: bool = False) -> str:
     """Đặt mật khẩu (AES-256, cố định — 07_...md mục 2.1) + permission cho 1 file PDF,
-    xuất ra file MỚI, không ghi đè file gốc. Dùng CHUNG 1 `password` cho cả user_pw và
-    owner_pw (đã chốt 07_...md mục 2.2 — không tăng thêm bảo mật nếu tách 2 ô riêng).
+    xuất ra file MỚI, không ghi đè file gốc.
+
+    ĐÃ SỬA (xem _generate_owner_secret() ở trên để biết đầy đủ lý do): `user_pw` = đúng
+    `password` người dùng nhập (UI vẫn chỉ 1 ô, không đổi gì cho người dùng). `owner_pw`
+    KHÔNG còn giống `user_pw` nữa — dùng 1 chuỗi ngẫu nhiên tự sinh nội bộ, chỉ tồn tại
+    trong đúng lần gọi này, để tránh người mở file luôn bị coi là Owner (mất tác dụng
+    permission). Đây là khác biệt DUY NHẤT so với bản chốt gốc ở 02_dac_ta_tinh_nang.md
+    mục 6.2 — mọi hành vi khác (AES-256, UI 1 ô, ánh xạ 3 checkbox...) giữ nguyên.
 
     File nguồn phải là file KHÔNG có mật khẩu sẵn (đi qua PDFDocument như mọi tính năng
     khác — nếu cần bảo vệ lại 1 file đã có mật khẩu, phải Gỡ mật khẩu trước)."""
@@ -560,13 +591,14 @@ def protect_pdf(path: str, output_path: str, password: str,
         raise ValueError("Mật khẩu không được để trống")
 
     permissions = build_protection_permissions(cam_in, cam_chinh_sua, cam_sao_chep)
+    owner_secret = _generate_owner_secret()
     with PDFDocument(path) as doc:
         try:
             doc.raw.save(
                 output_path,
                 encryption=fitz.PDF_ENCRYPT_AES_256,
                 user_pw=password,
-                owner_pw=password,
+                owner_pw=owner_secret,
                 permissions=permissions,
             )
         except Exception as exc:
@@ -604,6 +636,12 @@ def get_protection_status(path: str) -> ProtectionStatus:
 def remove_password(path: str, output_path: str, password: Optional[str] = None) -> str:
     """Gỡ mật khẩu + mọi permission, xuất file MỚI hoàn toàn không còn mã hoá
     (07_...md mục 2.5). KHÔNG ghi đè file gốc.
+
+    LƯU Ý (đã xác nhận với đại ca): vì permission bits nằm chung trong encryption
+    dictionary với password, `doc.save(..., encryption=PDF_ENCRYPT_NONE)` xoá cả 2 CÙNG
+    LÚC — không có khái niệm "chỉ gỡ mật khẩu, giữ nguyên giới hạn quyền". File kết quả
+    sau khi gỡ luôn mở tự do VÀ In/Sửa/Copy đều dùng được bình thường, đúng ý nghĩa
+    "hoàn toàn không còn mã hoá" đã chốt — không cần sửa gì thêm ở hàm này.
 
     - File cần User Password (needs_pass=True): bắt buộc truyền đúng `password` —
       sai sẽ raise WrongPasswordError để widget báo lỗi ngay tại ô nhập.
@@ -651,7 +689,10 @@ class UnlockPreviewSession:
       hiện lỗi ngay tại ô nhập (đáp ứng yêu cầu "không render Cột B" cho tới khi đúng).
     - File chỉ có Owner Password (needs_pass=False): coi như đã sẵn sàng ngay từ lúc mở
       (is_ready = True ngay, không cần gọi authenticate()) — đúng đặc tả case 3: file
-      tự mở đọc được, không cần mật khẩu."""
+      tự mở đọc được, không cần mật khẩu.
+
+    save_unlocked() dùng cùng cơ chế PDF_ENCRYPT_NONE như remove_password() — gỡ cả
+    mật khẩu lẫn mọi giới hạn quyền hạn cùng lúc (xem chú thích ở remove_password())."""
 
     def __init__(self, path: str) -> None:
         self.path = path

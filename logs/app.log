@@ -61,3 +61,6 @@
 2026-09-21 08:33:51 [INFO] Đã chèn Watermark (Text) vào 'D:/Team/PDF_Split_01.pdf' -> 'D:/Team/PDF_Split_01_Watermark.pdf'
 2026-09-21 10:53:12 [INFO] Tách file thành công: 'E:/Scan/2026_09_21/SCAN_0001_edited.pdf' -> 2 file tại 'E:/Scan/2026_09_21'
 2026-09-21 11:09:16 [INFO] Tách file thành công: 'D:/temp/Merged_File_p8-186.pdf' -> 36 file tại 'D:/temp'
+2026-09-21 20:54:21 [INFO] Tách file thành công: 'D:/Temp/PDF_Merger.pdf' -> 6 file tại 'D:/Temp'
+2026-09-21 21:00:19 [INFO] Đặt mật khẩu thành công: D:/Temp/PDF_Split_01_protected.pdf
+2026-09-21 21:01:07 [INFO] Gỡ mật khẩu/giới hạn thành công: D:/Temp/PDF_Split_01_protected_unlocked.pdf

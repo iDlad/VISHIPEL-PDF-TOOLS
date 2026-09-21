@@ -632,6 +632,86 @@ def remove_password(path: str, output_path: str, password: Optional[str] = None)
     return output_path
 
 
+# -----------------------------------------------------------------------------
+# 6b. Phiên xem trước + Mở khóa (Unlock) — CHỈ BỔ SUNG, không sửa 3 hàm ở trên.
+#
+# Lý do cần lớp riêng thay vì gọi thẳng remove_password(): remove_password() mở file,
+# xác thực, LƯU và ĐÓNG file trong đúng 1 lần gọi — không giữ lại fitz.Document đang mở
+# để UI render Cột B trước khi người dùng bấm "Lưu File". Lớp này giữ đúng 1
+# fitz.Document đã authenticate() thành công trong bộ nhớ, để widget dùng
+# render_document_page() (mục 8 bên dưới, vốn đã có sẵn dùng chung cho Chèn file)
+# render preview, rồi mới gọi save_unlocked() khi người dùng bấm Lưu File — đúng tinh
+# thần InsertSession (mục 5) giữ working_document trong bộ nhớ trước khi ghi ra đĩa.
+# -----------------------------------------------------------------------------
+
+class UnlockPreviewSession:
+    """Áp dụng đúng luồng đã chốt (02_dac_ta_tinh_nang.md mục 6.5):
+    - File có User Password (needs_pass=True): PHẢI gọi authenticate(password) thành
+      công mới được render/lưu — sai mật khẩu trả về False, KHÔNG raise, để widget tự
+      hiện lỗi ngay tại ô nhập (đáp ứng yêu cầu "không render Cột B" cho tới khi đúng).
+    - File chỉ có Owner Password (needs_pass=False): coi như đã sẵn sàng ngay từ lúc mở
+      (is_ready = True ngay, không cần gọi authenticate()) — đúng đặc tả case 3: file
+      tự mở đọc được, không cần mật khẩu."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        try:
+            self._doc = fitz.open(path)
+        except Exception as exc:
+            raise CorruptedFileError(f"Không thể mở file: {path}") from exc
+        self._needs_password = self._doc.needs_pass
+        # Trường hợp không cần User Password (không mật khẩu, hoặc chỉ owner-only):
+        # coi như đã sẵn sàng render ngay, không phải chờ nhập gì thêm.
+        self._authenticated = not self._needs_password
+
+    @property
+    def needs_password(self) -> bool:
+        """True nếu file có User Password — bắt buộc authenticate() đúng mới render/lưu được."""
+        return self._needs_password
+
+    @property
+    def is_ready(self) -> bool:
+        """True nếu đã có thể render preview / lưu file (đã authenticate thành công,
+        hoặc file thuộc case owner-only không cần mật khẩu)."""
+        return self._authenticated
+
+    @property
+    def document(self) -> fitz.Document:
+        """Expose fitz.Document đang mở — dùng cho render_document_page() (mục 8).
+        Chỉ nên gọi khi is_ready = True, gọi sớm hơn sẽ render nội dung còn mã hoá."""
+        return self._doc
+
+    def authenticate(self, password: str) -> bool:
+        """Thử xác thực User Password. Trả True/False, KHÔNG raise — widget tự quyết
+        định thông báo lỗi tại ô nhập (khác remove_password() vốn raise
+        WrongPasswordError, vì ở đây là luồng preview trước, chưa ghi file ngay)."""
+        if not self._needs_password:
+            self._authenticated = True
+            return True
+        ok = bool(password) and bool(self._doc.authenticate(password))
+        self._authenticated = ok
+        return ok
+
+    def save_unlocked(self, output_path: str) -> str:
+        """Ghi file MỚI hoàn toàn không còn mật khẩu/permission — dùng đúng cơ chế của
+        remove_password() (PDF_ENCRYPT_NONE), không ghi đè file gốc."""
+        if not self._authenticated:
+            raise WrongPasswordError("Chưa xác thực thành công, không thể lưu file")
+        try:
+            self._doc.save(output_path, encryption=fitz.PDF_ENCRYPT_NONE)
+        except Exception as exc:
+            raise FileLockedError(
+                f"Không thể ghi file (có thể đang bị khóa): {output_path}"
+            ) from exc
+        return output_path
+
+    def close(self) -> None:
+        """Đóng document — widget gọi khi bấm Clear hoặc chọn file khác."""
+        if self._doc is not None:
+            self._doc.close()
+            self._doc = None
+
+
 # =============================================================================
 # 7. Chèn Watermark — CHỈ BỔ SUNG, không sửa mục 1-5 phía trên.
 #    Xem 07_dac_ta_chot_bao_ve_va_watermark.md mục 1.
@@ -864,3 +944,25 @@ def render_document_page(doc: fitz.Document, page_index: int, target_width: int 
     zoom = target_width / rect.width if rect.width else 1.0
     pixmap = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
     return pixmap.tobytes("png")
+
+
+# -----------------------------------------------------------------------------
+# 8b. Tiện ích đọc metadata trực tiếp từ 1 fitz.Document ĐANG MỞ trong bộ nhớ —
+# CHỈ BỔ SUNG, cùng nguyên lý với render_document_page() ở trên. Cần thêm 2 hàm nhỏ
+# này để protect_feature_widget.py (tab Mở khóa, dùng UnlockPreviewSession — mục 6b)
+# KHÔNG phải tự import/đụng fitz trực tiếp (đúng nguyên tắc "widget chỉ gọi hàm từ
+# pdf_core.py", xem 04_kien_truc_module_va_flow.md mục "Nguyên tắc chung").
+# -----------------------------------------------------------------------------
+
+def get_document_page_count(doc: fitz.Document) -> int:
+    """Số trang của 1 fitz.Document ĐÃ MỞ SẴN — dùng khi tài liệu chỉ tồn tại tạm trong
+    bộ nhớ (VD file vừa authenticate() nhưng chưa lưu ra đĩa), nên get_page_count(path)
+    (mục 2, chỉ nhận path) không dùng được."""
+    return doc.page_count
+
+
+def get_document_page_size(doc: fitz.Document, page_index: int) -> Tuple[float, float]:
+    """(width, height) của 1 trang, đọc trực tiếp từ fitz.Document ĐÃ MỞ SẴN — cùng lý
+    do với get_document_page_count() ở trên."""
+    rect = doc[page_index].rect
+    return (rect.width, rect.height)

@@ -8,24 +8,27 @@ Giao diện tính năng Bảo vệ (Protect) — Đặt mật khẩu / Mở khó
   (50%-200%), dải thumbnail trái (đồng bộ 1 chiều: click → cuộn khung lớn),
   khung lớn dùng _PannablePreviewScrollArea (cuộn chuột + pan chuột trái).
 
-Luồng nghiệp vụ (mock — chưa nối pdf_core):
-- Tab Đặt mật khẩu: chọn 1 file → xem trước render ngay (file chưa khóa).
-  Validate: đã chọn file, mật khẩu không trống, 2 ô khớp nhau.
-- Tab Mở khóa: chọn file → Cột B ở trạng thái "khóa" (không render nội dung).
-  Bấm "Bắt đầu Mở khóa" khi chưa nhập mật khẩu → báo lỗi, vẫn không render.
-  Nhập mật khẩu + bấm → mở khóa thành công → Cột B mới render nội dung.
-  Nút "Lưu File" chỉ bật sau khi mở khóa thành công (demo: lưu file mới
-  hoàn toàn không mật khẩu).
+Luồng nghiệp vụ THẬT (đã nối pdf_core, xem 02_dac_ta_tinh_nang.md mục 6):
+- Tab Đặt mật khẩu: chọn 1 file KHÔNG có mật khẩu → render preview thật ngay.
+  Nếu file đã có mật khẩu/giới hạn → báo lỗi, yêu cầu dùng tab Mở khóa trước.
+  Validate: đã chọn file, mật khẩu không trống, 2 ô khớp nhau → protect_pdf().
+- Tab Mở khóa: chọn file đã có mật khẩu/giới hạn.
+  * Cần User Password (needs_password): Cột B giữ trạng thái "khóa", KHÔNG render
+    nội dung cho tới khi nhập đúng mật khẩu và authenticate() thành công.
+  * Chỉ có Owner Password (owner-only, không cần mật khẩu mở): render Cột B ngay
+    (nội dung vốn đọc tự do được), ẩn ô mật khẩu, hỏi xác nhận riêng lúc bấm Lưu File.
+  Lưu File luôn xuất ra 1 file MỚI hoàn toàn không còn mật khẩu/giới hạn.
 
 Advanced Options luôn mở, cố định — không có trạng thái thu gọn.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+import os
+from typing import Dict, List, Optional, Tuple
 
 import qtawesome as qta
-from PySide6.QtCore import Qt, Signal, QSize, QPoint
-from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtCore import Qt, Signal, QSize, QPoint, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPixmap, QDesktopServices
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -41,7 +44,11 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QListWidget,
     QListWidgetItem,
+    QDialog,
 )
+
+from src import pdf_core
+from src import logger
 
 from src.ui.vishipel_theme import (
     COLOR_ACCENT,
@@ -58,11 +65,8 @@ from src.ui.vishipel_theme import (
 )
 
 # ---------------------------------------------------------------------------
-# Dữ liệu giả để dựng giao diện
+# Hằng số layout
 # ---------------------------------------------------------------------------
-_MOCK_FILE_NAME = "Tai lieu bao mat.pdf"
-_MOCK_PAGE_COUNT = 6
-
 _ROW_ICON_SIZE = 34
 _DROPZONE_ICON_BOX = 56
 
@@ -80,6 +84,7 @@ _PREVIEW_SIDE_MARGIN = 12
 _PREVIEW_MIN_PAGE_WIDTH = 220
 _PREVIEW_PAGE_WIDTH_FALLBACK = 340
 _PREVIEW_PAGE_HEIGHT_DEFAULT = 460
+_DEFAULT_ASPECT_RATIO = _PREVIEW_PAGE_HEIGHT_DEFAULT / _PREVIEW_PAGE_WIDTH_FALLBACK
 
 # Chiều cao ô nhập mật khẩu + nút con mắt (nút mắt nền cam, theo ảnh thiết kế).
 _PASSWORD_INPUT_HEIGHT = 52
@@ -90,6 +95,16 @@ _UNLOCK_CTA_HEIGHT = 52
 
 # Advanced Options — màu chip + banner cảnh báo.
 _CHIP_BG = "#F3F4F6"
+
+# Tên file gợi ý mặc định (chưa có trong 02_dac_ta_tinh_nang.md mục 6, đã thống nhất
+# riêng cho lần nối logic này — theo đúng khuôn mẫu "<gốc>_<hậu tố>.pdf" như Edit/Chèn).
+_DEFAULT_SUFFIX_PROTECT = "_protected"
+_DEFAULT_SUFFIX_UNLOCK = "_unlocked"
+
+# Ngưỡng quy đổi điểm 0-100 của pdf_core.calculate_password_strength() sang 3 mức
+# hiển thị trên _StrengthMeter (đã thống nhất riêng cho lần nối logic này).
+_STRENGTH_WEAK_MAX = 40
+_STRENGTH_MEDIUM_MAX = 70
 
 _SCROLLBAR_QSS = f"""
     QScrollBar:vertical {{
@@ -138,22 +153,41 @@ def _zoom_button_style() -> str:
         """
 
 
-def _password_strength_score(password: str) -> int:
-    """Chấm điểm độ mạnh mật khẩu (0-3):
-    - +1: độ dài >= 8 ký tự
-    - +1: có cả chữ hoa và chữ thường
-    - +1: có chữ số hoặc ký tự đặc biệt
-    """
-    if not password:
-        return 0
-    score = 0
-    if len(password) >= 8:
-        score += 1
-    if any(c.islower() for c in password) and any(c.isupper() for c in password):
-        score += 1
-    if any(c.isdigit() for c in password) or any(not c.isalnum() for c in password):
-        score += 1
-    return score
+def _primary_button_style() -> str:
+    """Style nút hành động chính (Accent) — dùng chung cho ProtectFeatureWidget và các
+    dialog tự vẽ bên dưới (_OverwriteConfirmDialog/_ConfirmDialog)."""
+    return f"""
+        QPushButton {{
+            background-color: {COLOR_ACCENT};
+            color: white;
+            border: none;
+            border-radius: {CORNER_RADIUS}px;
+            font-size: 13px;
+            font-weight: 700;
+            padding: 0 16px;
+        }}
+        QPushButton:hover:enabled {{ background-color: #E28104; }}
+        QPushButton:pressed:enabled {{ background-color: #C87203; }}
+        QPushButton:disabled {{ background-color: #FDBA74; }}
+        """
+
+
+def _secondary_button_style() -> str:
+    """Style nút phụ (viền, nền trắng) — dùng chung cho ProtectFeatureWidget và các
+    dialog tự vẽ bên dưới."""
+    return f"""
+        QPushButton {{
+            background-color: white;
+            color: {COLOR_TEXT_PRIMARY};
+            border: 1.5px solid {COLOR_BORDER_STRONG};
+            border-radius: {CORNER_RADIUS}px;
+            font-size: 13px;
+            font-weight: 700;
+            padding: 0 16px;
+        }}
+        QPushButton:hover {{ background-color: #F3F4F6; }}
+        QPushButton:pressed {{ background-color: #E5E7EB; }}
+        """
 
 
 # ---------------------------------------------------------------------------
@@ -341,7 +375,7 @@ class _PasswordInput(QFrame):
 
         self.edit = QLineEdit()
         self.edit.setPlaceholderText(placeholder)
-        self.edit.setEchoMode(QLineEdit.Password) # Mặc định mã hóa mật khẩu thành dấu chấm
+        self.edit.setEchoMode(QLineEdit.Password)  # Mặc định mã hóa mật khẩu thành dấu chấm
         self.edit.setStyleSheet(
             f"""
             QLineEdit {{
@@ -383,13 +417,13 @@ class _PasswordInput(QFrame):
     def _toggle_echo(self) -> None:
         # Nếu đang ở chế độ ẨN (Password):
         if self.edit.echoMode() == QLineEdit.Password:
-            self.edit.setEchoMode(QLineEdit.Normal) # 1. Chuyển sang HIỆN mật khẩu
-            self.eye_btn.setIcon(qta.icon("mdi6.eye-outline", color="white")) # 2. Đổi icon sang MẮT MỞ
+            self.edit.setEchoMode(QLineEdit.Normal)  # 1. Chuyển sang HIỆN mật khẩu
+            self.eye_btn.setIcon(qta.icon("mdi6.eye-outline", color="white"))  # 2. Đổi icon sang MẮT MỞ
         # Nếu đang ở chế độ HIỆN (Normal):
         else:
-            self.edit.setEchoMode(QLineEdit.Password) # 1. Chuyển sang ẨN mật khẩu (dấu chấm)
-            self.eye_btn.setIcon(qta.icon("mdi6.eye-off-outline", color="white")) # 2. Đổi icon sang MẮT NHẮM
-            
+            self.edit.setEchoMode(QLineEdit.Password)  # 1. Chuyển sang ẨN mật khẩu (dấu chấm)
+            self.eye_btn.setIcon(qta.icon("mdi6.eye-off-outline", color="white"))  # 2. Đổi icon sang MẮT NHẮM
+
     def text(self) -> str:
         return self.edit.text()
 
@@ -531,6 +565,7 @@ class _AdvancedOptions(QFrame):
         layout.addLayout(title_row)
 
         # 3 quyền hạn — "Cấm In" mặc định được tick (theo ảnh thiết kế).
+        # Thứ tự PHẢI khớp đúng build_protection_permissions(cam_in, cam_chinh_sua, cam_sao_chep).
         self.checks: List[_ToggleCheck] = []
         for label, checked in (
             ("Cấm In", True),
@@ -593,9 +628,15 @@ class _AdvancedOptions(QFrame):
     def selected_permissions(self) -> List[str]:
         return [c.text().strip() for c in self.checks if c.isChecked()]
 
+    def permission_flags(self) -> Tuple[bool, bool, bool]:
+        """(cam_in, cam_chinh_sua, cam_sao_chep) — đúng thứ tự tham số
+        pdf_core.build_protection_permissions()/protect_pdf()."""
+        cam_in, cam_chinh_sua, cam_sao_chep = (c.isChecked() for c in self.checks)
+        return cam_in, cam_chinh_sua, cam_sao_chep
+
 
 # ---------------------------------------------------------------------------
-# Cột B — Thumbnail nhỏ (dải trái) — copy nguyên từ merge_widget.py
+# Cột B — Thumbnail nhỏ (dải trái) — có ảnh render thật (thay placeholder cũ)
 # ---------------------------------------------------------------------------
 class _PreviewThumb(QFrame):
     clicked = Signal(int)
@@ -609,7 +650,7 @@ class _PreviewThumb(QFrame):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(0)
+        layout.setSpacing(2)
 
         badge_row = QHBoxLayout()
         self.badge = QLabel(str(page_number))
@@ -618,9 +659,23 @@ class _PreviewThumb(QFrame):
         badge_row.addWidget(self.badge)
         badge_row.addStretch()
         layout.addLayout(badge_row)
-        layout.addStretch()
+
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setStyleSheet("background: transparent; border: none;")
+        layout.addWidget(self.image_label, 1)
 
         self._apply_style()
+
+    def set_image(self, image_bytes: bytes) -> None:
+        pixmap = QPixmap()
+        pixmap.loadFromData(image_bytes, "PNG")
+        if pixmap.isNull():
+            return
+        scaled = pixmap.scaled(
+            _THUMB_W - 12, _THUMB_H - 26, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        self.image_label.setPixmap(scaled)
 
     def _apply_style(self) -> None:
         if self.is_current:
@@ -635,7 +690,10 @@ class _PreviewThumb(QFrame):
             self.setStyleSheet(
                 f"QFrame {{ background-color: white; border: 1px solid {COLOR_BORDER}; border-radius: 6px; }}"
             )
-            self.badge.setStyleSheet("background-color: transparent; color: transparent; border: none;")
+            self.badge.setStyleSheet(
+                f"background-color: {COLOR_TEXT_SECONDARY}; color: white; font-size: 10px; font-weight: 700; "
+                f"border-radius: {_BADGE_SIZE // 2}px; border: none;"
+            )
 
     def set_current(self, current: bool) -> None:
         self.is_current = current
@@ -700,29 +758,50 @@ class _PannablePreviewScrollArea(QScrollArea):
 
 
 # ---------------------------------------------------------------------------
-# Cột B — 1 trang placeholder (mock, chưa nối pdf_core) — giống merge_widget.py
+# Cột B — 1 trang preview, có ảnh render thật (thay placeholder số to cũ)
 # ---------------------------------------------------------------------------
 class _ProtectPreviewPage(QFrame):
-    def __init__(self, page_number: int, parent: QWidget | None = None) -> None:
+    def __init__(self, page_number: int, aspect_ratio: float = _DEFAULT_ASPECT_RATIO,
+                 parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.page_number = page_number
-        self.aspect_ratio = _PREVIEW_PAGE_HEIGHT_DEFAULT / _PREVIEW_PAGE_WIDTH_FALLBACK
+        self.aspect_ratio = aspect_ratio
+        self._raw_pixmap: Optional[QPixmap] = None
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(4, 4, 4, 4)
         layout.setAlignment(Qt.AlignCenter)
 
-        self.number_label = QLabel(str(page_number))
-        self.number_label.setAlignment(Qt.AlignCenter)
-        self.number_label.setStyleSheet(
-            f"color: {COLOR_TEXT_SECONDARY}; font-size: 48px; font-weight: 700; "
-            "background: transparent; border: none;"
-        )
-        layout.addWidget(self.number_label)
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setStyleSheet("background: transparent; border: none;")
+        layout.addWidget(self.image_label)
 
         self.setStyleSheet(
             f"QFrame {{ background-color: white; border: 1px solid {COLOR_BORDER}; border-radius: 6px; }}"
         )
+
+    def set_image(self, image_bytes: bytes) -> None:
+        pixmap = QPixmap()
+        pixmap.loadFromData(image_bytes, "PNG")
+        if pixmap.isNull():
+            return
+        self._raw_pixmap = pixmap
+        self._rescale()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._rescale()
+
+    def _rescale(self) -> None:
+        if self._raw_pixmap is None or self._raw_pixmap.isNull():
+            return
+        target_w = max(1, self.width() - 8)
+        target_h = max(1, self.height() - 8)
+        scaled = self._raw_pixmap.scaled(
+            target_w, target_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        self.image_label.setPixmap(scaled)
 
 
 # ---------------------------------------------------------------------------
@@ -766,6 +845,149 @@ class _LockedPlaceholder(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Dialog tự vẽ — Trùng tên khi lưu: Ghi đè / Đổi tên khác / Hủy
+# (01_dac_ta_giao_dien.md mục 3: nền trắng/chữ tối/nút Accent, đồng bộ style
+# đã dùng ở Gộp file/Edit/Chèn file)
+# ---------------------------------------------------------------------------
+class _OverwriteConfirmDialog(QDialog):
+    OVERWRITE = "overwrite"
+    RENAME = "rename"
+    CANCEL = "cancel"
+
+    def __init__(self, file_name: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Trùng tên file")
+        self.setModal(True)
+        self.setStyleSheet("QDialog { background-color: white; }")
+        self._result = self.CANCEL
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 18)
+        layout.setSpacing(14)
+
+        icon_label = QLabel()
+        icon_label.setPixmap(qta.icon("mdi6.alert-circle-outline", color=COLOR_ACCENT).pixmap(QSize(36, 36)))
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setStyleSheet("background: transparent; border: none;")
+        layout.addWidget(icon_label)
+
+        message = QLabel(f'File "{file_name}" đã tồn tại. Bạn muốn làm gì?')
+        message.setWordWrap(True)
+        message.setAlignment(Qt.AlignCenter)
+        message.setStyleSheet(
+            f"color: {COLOR_TEXT_PRIMARY}; font-size: 14px; font-weight: 600; "
+            "background: transparent; border: none;"
+        )
+        layout.addWidget(message)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        cancel_btn = QPushButton("Hủy")
+        cancel_btn.setCursor(Qt.PointingHandCursor)
+        cancel_btn.setFixedHeight(CONTROL_HEIGHT)
+        cancel_btn.setStyleSheet(_secondary_button_style())
+        cancel_btn.clicked.connect(self._on_cancel)
+        btn_row.addWidget(cancel_btn)
+
+        rename_btn = QPushButton("Đổi tên khác")
+        rename_btn.setCursor(Qt.PointingHandCursor)
+        rename_btn.setFixedHeight(CONTROL_HEIGHT)
+        rename_btn.setStyleSheet(_secondary_button_style())
+        rename_btn.clicked.connect(self._on_rename)
+        btn_row.addWidget(rename_btn)
+
+        overwrite_btn = QPushButton("Ghi đè")
+        overwrite_btn.setCursor(Qt.PointingHandCursor)
+        overwrite_btn.setFixedHeight(CONTROL_HEIGHT)
+        overwrite_btn.setStyleSheet(_primary_button_style())
+        overwrite_btn.clicked.connect(self._on_overwrite)
+        btn_row.addWidget(overwrite_btn)
+
+        layout.addLayout(btn_row)
+
+    def _on_overwrite(self) -> None:
+        self._result = self.OVERWRITE
+        self.accept()
+
+    def _on_rename(self) -> None:
+        self._result = self.RENAME
+        self.accept()
+
+    def _on_cancel(self) -> None:
+        self._result = self.CANCEL
+        self.reject()
+
+    @classmethod
+    def ask(cls, parent: QWidget, file_name: str) -> str:
+        dialog = cls(file_name, parent)
+        dialog.exec()
+        return dialog._result
+
+
+# ---------------------------------------------------------------------------
+# Dialog tự vẽ — Xác nhận Đồng ý/Hủy dùng chung (case owner-only ở Gỡ mật khẩu:
+# "File này không có mật khẩu mở, chỉ có giới hạn quyền — Bạn có chắc muốn gỡ
+# giới hạn?", đúng 02_dac_ta_tinh_nang.md mục 6.5 case 3)
+# ---------------------------------------------------------------------------
+class _ConfirmDialog(QDialog):
+    def __init__(self, message: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Xác nhận")
+        self.setModal(True)
+        self.setStyleSheet("QDialog { background-color: white; }")
+        self._confirmed = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 18)
+        layout.setSpacing(14)
+
+        icon_label = QLabel()
+        icon_label.setPixmap(qta.icon("mdi6.help-circle-outline", color=COLOR_ACCENT).pixmap(QSize(36, 36)))
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setStyleSheet("background: transparent; border: none;")
+        layout.addWidget(icon_label)
+
+        text_label = QLabel(message)
+        text_label.setWordWrap(True)
+        text_label.setAlignment(Qt.AlignCenter)
+        text_label.setStyleSheet(
+            f"color: {COLOR_TEXT_PRIMARY}; font-size: 14px; font-weight: 600; "
+            "background: transparent; border: none;"
+        )
+        layout.addWidget(text_label)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        cancel_btn = QPushButton("Hủy")
+        cancel_btn.setCursor(Qt.PointingHandCursor)
+        cancel_btn.setFixedHeight(CONTROL_HEIGHT)
+        cancel_btn.setStyleSheet(_secondary_button_style())
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+
+        ok_btn = QPushButton("Đồng ý")
+        ok_btn.setCursor(Qt.PointingHandCursor)
+        ok_btn.setFixedHeight(CONTROL_HEIGHT)
+        ok_btn.setStyleSheet(_primary_button_style())
+        ok_btn.clicked.connect(self._on_ok)
+        btn_row.addWidget(ok_btn)
+
+        layout.addLayout(btn_row)
+
+    def _on_ok(self) -> None:
+        self._confirmed = True
+        self.accept()
+
+    @classmethod
+    def ask(cls, parent: QWidget, message: str) -> bool:
+        dialog = cls(message, parent)
+        dialog.exec()
+        return dialog._confirmed
+
+
+# ---------------------------------------------------------------------------
 # Widget chính
 # ---------------------------------------------------------------------------
 class ProtectFeatureWidget(QWidget):
@@ -773,10 +995,16 @@ class ProtectFeatureWidget(QWidget):
         super().__init__(parent)
 
         # State nghiệp vụ
-        self._current_file: Optional[str] = None
-        self._unlocked = False
+        self._current_path: Optional[str] = None      # đường dẫn đầy đủ, dùng để xử lý
+        self._current_file: Optional[str] = None       # tên hiển thị (basename)
+        self._protection_status: Optional[pdf_core.ProtectionStatus] = None
+        self._unlock_session: Optional[pdf_core.UnlockPreviewSession] = None
         self._mode = _ModeTabs.MODE_SET
         self._current_page = 0
+        self._page_count = 0
+
+        # Renderer dùng chung cho tab Đặt mật khẩu (file không mật khẩu, render qua path)
+        self._page_renderer = pdf_core.PageRenderer()
 
         # State preview Cột B (giống merge_widget.py)
         self._preview_thumbs: List[_PreviewThumb] = []
@@ -969,7 +1197,7 @@ class ProtectFeatureWidget(QWidget):
         clear_btn.setCursor(Qt.PointingHandCursor)
         clear_btn.setFixedHeight(CONTROL_HEIGHT)
         clear_btn.setMinimumWidth(90)
-        clear_btn.setStyleSheet(self._secondary_button_style())
+        clear_btn.setStyleSheet(_secondary_button_style())
         clear_btn.clicked.connect(self._on_clear_clicked)
         bottom_row.addWidget(clear_btn)
 
@@ -978,7 +1206,7 @@ class ProtectFeatureWidget(QWidget):
         self.set_password_btn.setCursor(Qt.PointingHandCursor)
         self.set_password_btn.setFixedHeight(CONTROL_HEIGHT)
         self.set_password_btn.setMinimumWidth(140)
-        self.set_password_btn.setStyleSheet(self._primary_button_style())
+        self.set_password_btn.setStyleSheet(_primary_button_style())
         self.set_password_btn.clicked.connect(self._on_set_password_clicked)
         bottom_row.addWidget(self.set_password_btn)
 
@@ -1011,8 +1239,9 @@ class ProtectFeatureWidget(QWidget):
                 font-size: 15px;
                 font-weight: 700;
             }}
-            QPushButton:hover {{ background-color: #E28104; }}
-            QPushButton:pressed {{ background-color: #C87203; }}
+            QPushButton:hover:enabled {{ background-color: #E28104; }}
+            QPushButton:pressed:enabled {{ background-color: #C87203; }}
+            QPushButton:disabled {{ background-color: #FDBA74; }}
             """
         )
         self.unlock_cta_btn.clicked.connect(self._on_unlock_clicked)
@@ -1028,17 +1257,17 @@ class ProtectFeatureWidget(QWidget):
         clear_btn.setCursor(Qt.PointingHandCursor)
         clear_btn.setFixedHeight(CONTROL_HEIGHT)
         clear_btn.setMinimumWidth(90)
-        clear_btn.setStyleSheet(self._secondary_button_style())
+        clear_btn.setStyleSheet(_secondary_button_style())
         clear_btn.clicked.connect(self._on_clear_clicked)
         bottom_row.addWidget(clear_btn)
 
-        # "Lưu File" — chỉ bật sau khi mở khóa thành công.
+        # "Lưu File" — chỉ bật sau khi mở khóa thành công (hoặc case owner-only sẵn sàng ngay).
         self.save_file_btn = QPushButton(" Lưu File")
         self.save_file_btn.setIcon(qta.icon("mdi6.content-save-outline", color="white"))
         self.save_file_btn.setCursor(Qt.PointingHandCursor)
         self.save_file_btn.setFixedHeight(CONTROL_HEIGHT)
         self.save_file_btn.setMinimumWidth(130)
-        self.save_file_btn.setStyleSheet(self._primary_button_style())
+        self.save_file_btn.setStyleSheet(_primary_button_style())
         self.save_file_btn.clicked.connect(self._on_save_file_clicked)
         self.save_file_btn.setEnabled(False)
         bottom_row.addWidget(self.save_file_btn)
@@ -1048,80 +1277,134 @@ class ProtectFeatureWidget(QWidget):
 
         return page
 
-    @staticmethod
-    def _primary_button_style() -> str:
-        return f"""
-            QPushButton {{
-                background-color: {COLOR_ACCENT};
-                color: white;
-                border: none;
-                border-radius: {CORNER_RADIUS}px;
-                font-size: 13px;
-                font-weight: 700;
-                padding: 0 16px;
-            }}
-            QPushButton:hover:enabled {{ background-color: #E28104; }}
-            QPushButton:pressed:enabled {{ background-color: #C87203; }}
-            QPushButton:disabled {{ background-color: #FDBA74; }}
-            """
-
-    @staticmethod
-    def _secondary_button_style() -> str:
-        return f"""
-            QPushButton {{
-                background-color: white;
-                color: {COLOR_TEXT_PRIMARY};
-                border: 1.5px solid {COLOR_BORDER_STRONG};
-                border-radius: {CORNER_RADIUS}px;
-                font-size: 13px;
-                font-weight: 700;
-                padding: 0 16px;
-            }}
-            QPushButton:hover {{ background-color: #F3F4F6; }}
-            QPushButton:pressed {{ background-color: #E5E7EB; }}
-            """
-
     # ------------------------------------------------------------------
     # Sự kiện chung
     # ------------------------------------------------------------------
     def _on_files_selected(self, paths: List[str]) -> None:
         if not paths:
             return
-        self._current_file = paths[0].replace("\\", "/").split("/")[-1]
-        self._unlocked = False
+        path = paths[0]
+        self._close_unlock_session()
+
+        try:
+            status = pdf_core.get_protection_status(path)
+        except pdf_core.CorruptedFileError as exc:
+            self._show_error(f"Không thể đọc file: {exc}")
+            logger.log_error(f"Chọn file lỗi ở tính năng Bảo vệ: {path}", exc)
+            return
+
+        if self._mode == _ModeTabs.MODE_SET and status.is_protected:
+            self._show_error(
+                'File này đã được bảo vệ — vui lòng dùng tab "Mở khóa" trước khi đặt mật khẩu mới.'
+            )
+            return
+        if self._mode == _ModeTabs.MODE_UNLOCK and not status.is_protected:
+            self._show_error(
+                'File này không được bảo vệ — không cần mở khóa. Vui lòng dùng tab "Đặt mật khẩu".'
+            )
+            return
+
+        self._current_path = path
+        self._current_file = path.replace("\\", "/").split("/")[-1]
+        self._protection_status = status
         self._current_page = 0
         self.preview_title.setText(f"Xem trước: {self._current_file}")
         self._hide_result()
+
+        if self._mode == _ModeTabs.MODE_UNLOCK:
+            try:
+                self._unlock_session = pdf_core.UnlockPreviewSession(path)
+            except pdf_core.CorruptedFileError as exc:
+                self._show_error(f"Không thể mở file: {exc}")
+                logger.log_error(f"Lỗi mở file để mở khóa: {path}", exc)
+                self._reset_file_selection()
+                return
+
+            if self._unlock_session.is_ready:
+                # Trường hợp owner-only: không cần mật khẩu, render ngay + báo rõ cho người dùng.
+                self.unlock_password_input.edit.setEnabled(False)
+                self.unlock_password_input.eye_btn.setEnabled(False)
+                self.unlock_cta_btn.setEnabled(False)
+                self._show_success(
+                    "File này không có mật khẩu mở, chỉ có giới hạn quyền — nội dung đã "
+                    'hiển thị. Bấm "Lưu File" để gỡ giới hạn quyền.'
+                )
+            else:
+                self.unlock_password_input.edit.setEnabled(True)
+                self.unlock_password_input.eye_btn.setEnabled(True)
+                self.unlock_cta_btn.setEnabled(True)
+
         self._refresh_preview_state()
 
     def _on_mode_changed(self, mode: str) -> None:
         self._mode = mode
         self.mode_stack.setCurrentIndex(0 if mode == _ModeTabs.MODE_SET else 1)
         self._hide_result()
+        if self._current_path and self._protection_status is not None:
+            self._revalidate_current_file_for_mode()
         self._refresh_preview_state()
 
+    def _revalidate_current_file_for_mode(self) -> None:
+        """Gọi khi đổi tab trong lúc đang có file được chọn — 1 file chỉ hợp lệ cho
+        đúng 1 trong 2 tab (đã bảo vệ → Mở khóa; chưa bảo vệ → Đặt mật khẩu)."""
+        status = self._protection_status
+        if self._mode == _ModeTabs.MODE_SET and status.is_protected:
+            self._show_error(
+                'File này đã được bảo vệ — vui lòng dùng tab "Mở khóa" trước khi đặt mật khẩu mới.'
+            )
+            self._reset_file_selection()
+        elif self._mode == _ModeTabs.MODE_UNLOCK and not status.is_protected:
+            self._show_error(
+                'File này không được bảo vệ — không cần mở khóa. Vui lòng dùng tab "Đặt mật khẩu".'
+            )
+            self._reset_file_selection()
+
     def _on_clear_clicked(self) -> None:
-        self._current_file = None
-        self._unlocked = False
-        self._current_page = 0
         self.set_password_input.clear()
         self.confirm_password_input.clear()
-        self.unlock_password_input.clear()
         self.strength_meter.set_score(0)
-        self.save_file_btn.setEnabled(False)
         self._zoom_level = _ZOOM_DEFAULT
-        self._show_empty_preview()
+        self._reset_file_selection()
         self._update_zoom_percent_label()
         self._hide_result()
 
     def _on_password_text_changed(self, text: str) -> None:
-        self.strength_meter.set_score(_password_strength_score(text))
+        score_100 = pdf_core.calculate_password_strength(text)
+        if score_100 == 0:
+            level = 0
+        elif score_100 <= _STRENGTH_WEAK_MAX:
+            level = 1
+        elif score_100 <= _STRENGTH_MEDIUM_MAX:
+            level = 2
+        else:
+            level = 3
+        self.strength_meter.set_score(level)
+
+    def _reset_file_selection(self) -> None:
+        self._close_unlock_session()
+        self._current_path = None
+        self._current_file = None
+        self._protection_status = None
+        self._current_page = 0
+        self._page_count = 0
+        self.preview_title.setText("Xem trước: —")
+        self.unlock_password_input.clear()
+        self.unlock_password_input.edit.setEnabled(True)
+        self.unlock_password_input.eye_btn.setEnabled(True)
+        self.unlock_cta_btn.setEnabled(True)
+        self.save_file_btn.setEnabled(False)
+        self._show_empty_preview()
+
+    def _close_unlock_session(self) -> None:
+        if self._unlock_session is not None:
+            self._unlock_session.close()
+            self._unlock_session = None
 
     # ------------------------------------------------------------------
     # Tab Đặt mật khẩu
     # ------------------------------------------------------------------
     def _on_set_password_clicked(self) -> None:
-        if not self._current_file:
+        if not self._current_path:
             self._show_error("Vui lòng chọn 1 file PDF trước.")
             return
         password = self.set_password_input.text()
@@ -1132,19 +1415,44 @@ class ProtectFeatureWidget(QWidget):
         if password != confirm:
             self._show_error("Mật khẩu xác nhận không khớp — vui lòng kiểm tra lại.")
             return
-        permissions = self.advanced_options.selected_permissions()
-        perm_text = ", ".join(permissions) if permissions else "không giới hạn quyền hạn"
+
+        cam_in, cam_chinh_sua, cam_sao_chep = self.advanced_options.permission_flags()
+
+        default_name = self._default_output_name(self._current_file, _DEFAULT_SUFFIX_PROTECT)
+        save_path = self._ask_save_path(default_name)
+        if not save_path:
+            return
+
+        try:
+            pdf_core.protect_pdf(
+                self._current_path, save_path, password,
+                cam_in=cam_in, cam_chinh_sua=cam_chinh_sua, cam_sao_chep=cam_sao_chep,
+            )
+        except pdf_core.CorruptedFileError as exc:
+            self._show_error(f"Không thể đọc file: {exc}")
+            logger.log_error("Lỗi đặt mật khẩu (đọc file)", exc)
+            return
+        except pdf_core.FileLockedError as exc:
+            self._show_error("File đang được sử dụng bởi chương trình khác, vui lòng đóng và thử lại.")
+            logger.log_error("Lỗi đặt mật khẩu (ghi file)", exc)
+            return
+        except Exception as exc:  # không để crash app — hiện thông báo dễ hiểu, log chi tiết
+            self._show_error(f"Lỗi không xác định khi đặt mật khẩu: {exc}")
+            logger.log_error("Lỗi đặt mật khẩu (không xác định)", exc)
+            return
+
+        perm_text = ", ".join(self.advanced_options.selected_permissions()) or "không giới hạn quyền hạn"
+        logger.log_info(f"Đặt mật khẩu thành công: {save_path}")
         self._show_success(
-            f"[Demo giao diện] Sẽ đặt mật khẩu cho '{self._current_file}' "
-            f"(Độ mạnh: {self.strength_meter.label.text().split('—')[-1].strip()}; "
-            f"Quyền hạn: {perm_text}) — chưa xử lý PDF thật."
+            f"Đã đặt mật khẩu thành công (Quyền hạn: {perm_text}) — file kết quả: {save_path}"
         )
+        self._open_result_folder(save_path)
 
     # ------------------------------------------------------------------
     # Tab Mở khóa
     # ------------------------------------------------------------------
     def _on_unlock_clicked(self) -> None:
-        if not self._current_file:
+        if not self._current_path or self._unlock_session is None:
             self._show_error("Vui lòng chọn 1 file PDF cần mở khóa.")
             return
         password = self.unlock_password_input.text()
@@ -1154,51 +1462,196 @@ class ProtectFeatureWidget(QWidget):
             self._show_locked_placeholder()
             return
 
-        # Demo: coi như mật khẩu đúng → mở khóa thành công, render nội dung.
-        self._unlocked = True
+        ok = self._unlock_session.authenticate(password)
+        if not ok:
+            self._show_error("Mật khẩu không đúng — vui lòng kiểm tra lại.")
+            self._show_locked_placeholder()
+            self.save_file_btn.setEnabled(False)
+            return
+
         self._current_page = 1
-        self._build_preview_thumbs(_MOCK_PAGE_COUNT)
-        self._build_preview_pages(_MOCK_PAGE_COUNT)
-        self._refresh_page_view()
-        self.content_stack.setCurrentIndex(1)
+        self._render_unlock_preview()
         self.save_file_btn.setEnabled(True)
-        self._show_success(f"Đã mở khóa thành công '{self._current_file}' — nội dung đã được hiển thị bên phải.")
+        self._show_success(
+            f"Đã mở khóa thành công '{self._current_file}' — nội dung đã được hiển thị bên phải."
+        )
 
     def _on_save_file_clicked(self) -> None:
-        if not self._unlocked or not self._current_file:
+        if not self._current_path or self._unlock_session is None or not self._unlock_session.is_ready:
             self._show_error("Bạn cần mở khóa file thành công trước khi lưu.")
             return
-        base = self._current_file.rsplit(".pdf", 1)[0]
+
+        # Trường hợp owner-only (không cần mật khẩu mở) — hỏi xác nhận riêng trước khi gỡ
+        # giới hạn (02_dac_ta_tinh_nang.md mục 6.5 case 3).
+        if not self._unlock_session.needs_password:
+            confirmed = _ConfirmDialog.ask(
+                self,
+                "File này không có mật khẩu mở, chỉ có giới hạn quyền — "
+                "Bạn có chắc muốn gỡ giới hạn?",
+            )
+            if not confirmed:
+                return
+
+        default_name = self._default_output_name(self._current_file, _DEFAULT_SUFFIX_UNLOCK)
+        save_path = self._ask_save_path(default_name)
+        if not save_path:
+            return
+
+        try:
+            self._unlock_session.save_unlocked(save_path)
+        except pdf_core.FileLockedError as exc:
+            self._show_error("File đang được sử dụng bởi chương trình khác, vui lòng đóng và thử lại.")
+            logger.log_error("Lỗi lưu file đã mở khóa (ghi file)", exc)
+            return
+        except Exception as exc:
+            self._show_error(f"Lỗi không xác định khi lưu file: {exc}")
+            logger.log_error("Lỗi lưu file đã mở khóa (không xác định)", exc)
+            return
+
+        logger.log_info(f"Gỡ mật khẩu/giới hạn thành công: {save_path}")
         self._show_success(
-            f"[Demo giao diện] Sẽ lưu file mới không mật khẩu: '{base}_unlocked.pdf' — chưa xử lý PDF thật."
+            f"Đã lưu file mới không còn mật khẩu/giới hạn — file kết quả: {save_path}"
         )
+        self._open_result_folder(save_path)
+
+    # ------------------------------------------------------------------
+    # Lưu file — dialog chọn nơi lưu + tự kiểm tra trùng tên + tự mở thư mục kết quả
+    # ------------------------------------------------------------------
+    def _default_output_name(self, basename: Optional[str], suffix: str) -> str:
+        name = basename or "output.pdf"
+        stem = name[:-4] if name.lower().endswith(".pdf") else name
+        return f"{stem}{suffix}.pdf"
+
+    def _ask_save_path(self, default_name: str) -> Optional[str]:
+        """Mở dialog chọn nơi lưu (kiểu Save As). Đã tắt cảnh báo ghi đè mặc định của hệ
+        điều hành (DontConfirmOverwrite) để tự kiểm tra trùng tên bằng dialog tự vẽ riêng
+        (Ghi đè / Đổi tên khác / Hủy) — không hỏi 2 lần cho cùng 1 việc."""
+        dialog = QFileDialog(self, "Chọn nơi lưu file kết quả")
+        dialog.setAcceptMode(QFileDialog.AcceptSave)
+        dialog.setFileMode(QFileDialog.AnyFile)
+        dialog.setNameFilter("PDF Files (*.pdf)")
+        dialog.setDefaultSuffix("pdf")
+        dialog.setOption(QFileDialog.Option.DontConfirmOverwrite, True)
+        dialog.selectFile(default_name)
+
+        while True:
+            if dialog.exec() != QFileDialog.Accepted:
+                return None
+            selected = dialog.selectedFiles()
+            if not selected:
+                return None
+            save_path = selected[0]
+            if not save_path.lower().endswith(".pdf"):
+                save_path += ".pdf"
+
+            if not os.path.exists(save_path):
+                return save_path
+
+            choice = _OverwriteConfirmDialog.ask(self, os.path.basename(save_path))
+            if choice == _OverwriteConfirmDialog.OVERWRITE:
+                return save_path
+            if choice == _OverwriteConfirmDialog.RENAME:
+                dialog.selectFile(os.path.basename(save_path))
+                continue
+            return None  # Hủy
+
+    def _open_result_folder(self, save_path: str) -> None:
+        folder = os.path.dirname(save_path) or "."
+        QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
 
     # ------------------------------------------------------------------
     # Quản lý trạng thái Cột B
     # ------------------------------------------------------------------
     def _refresh_preview_state(self) -> None:
         """Theo mode + trạng thái file, quyết định Cột B render nội dung hay khóa."""
-        if not self._current_file:
+        if not self._current_path:
             self._show_empty_preview()
             return
         if self._mode == _ModeTabs.MODE_SET:
-            # Tab Đặt mật khẩu: file chưa khóa → xem trước ngay.
             self._current_page = 1
-            self._build_preview_thumbs(_MOCK_PAGE_COUNT)
-            self._build_preview_pages(_MOCK_PAGE_COUNT)
-            self._refresh_page_view()
-            self.content_stack.setCurrentIndex(1)
+            ok = self._load_set_password_preview()
+            if ok:
+                self._refresh_page_view()
+                self.content_stack.setCurrentIndex(1)
             return
-        # Tab Mở khóa: chỉ render khi đã mở khóa thành công.
-        if self._unlocked:
-            self._build_preview_thumbs(_MOCK_PAGE_COUNT)
-            self._build_preview_pages(_MOCK_PAGE_COUNT)
-            self._refresh_page_view()
-            self.content_stack.setCurrentIndex(1)
+
+        # Tab Mở khóa: chỉ render khi session đã sẵn sàng (đã authenticate, hoặc owner-only).
+        session = self._unlock_session
+        if session is not None and session.is_ready:
+            self._current_page = 1
+            self._render_unlock_preview()
             self.save_file_btn.setEnabled(True)
         else:
             self._show_locked_placeholder()
             self.save_file_btn.setEnabled(False)
+
+    def _load_set_password_preview(self) -> bool:
+        """Render preview thật cho tab Đặt mật khẩu — file lúc này KHÔNG có mật khẩu,
+        dùng list_page_infos()/PageRenderer (chỉ tái sử dụng, không sửa pdf_core)."""
+        try:
+            page_infos = pdf_core.list_page_infos(self._current_path)
+        except Exception as exc:
+            self._show_error(f"Không thể đọc file: {exc}")
+            logger.log_error(f"Lỗi đọc file ở tab Đặt mật khẩu: {self._current_path}", exc)
+            self._reset_file_selection()
+            return False
+
+        sizes = [(info.width, info.height) for info in page_infos]
+        self._page_count = len(page_infos)
+        self._build_preview_thumbs(self._page_count)
+        self._build_preview_pages(self._page_count, sizes)
+
+        path = self._current_path
+        for i in range(self._page_count):
+            page_number = i + 1
+            try:
+                thumb_bytes = self._page_renderer.render_thumbnail(path, i, max_width=160)
+                self._preview_thumbs[i].set_image(thumb_bytes)
+            except Exception as exc:
+                logger.log_error(f"Lỗi render thumbnail trang {page_number} (Đặt mật khẩu)", exc)
+            frame = self._preview_pages.get(page_number)
+            if frame is not None:
+                try:
+                    width = frame.width() or self._compute_preview_width()
+                    detail_bytes = self._page_renderer.render_page_detail(
+                        path, i, target_width=max(width, 200)
+                    )
+                    frame.set_image(detail_bytes)
+                except Exception as exc:
+                    logger.log_error(f"Lỗi render preview trang {page_number} (Đặt mật khẩu)", exc)
+        return True
+
+    def _render_unlock_preview(self) -> None:
+        """Render preview thật cho tab Mở khóa, TRỰC TIẾP từ fitz.Document đang mở trong
+        bộ nhớ của UnlockPreviewSession (mục 6b pdf_core.py) — dùng render_document_page()
+        (mục 8) đã có sẵn, không qua path/PDFDocument (file trên đĩa vẫn còn mật khẩu)."""
+        session = self._unlock_session
+        doc = session.document
+        total_pages = pdf_core.get_document_page_count(doc)
+        self._page_count = total_pages
+        sizes = [pdf_core.get_document_page_size(doc, i) for i in range(total_pages)]
+
+        self._build_preview_thumbs(total_pages)
+        self._build_preview_pages(total_pages, sizes)
+
+        for i in range(total_pages):
+            page_number = i + 1
+            try:
+                thumb_bytes = pdf_core.render_document_page(doc, i, target_width=160)
+                self._preview_thumbs[i].set_image(thumb_bytes)
+            except Exception as exc:
+                logger.log_error(f"Lỗi render thumbnail trang {page_number} (Mở khóa)", exc)
+            frame = self._preview_pages.get(page_number)
+            if frame is not None:
+                try:
+                    width = frame.width() or self._compute_preview_width()
+                    detail_bytes = pdf_core.render_document_page(doc, i, target_width=max(width, 200))
+                    frame.set_image(detail_bytes)
+                except Exception as exc:
+                    logger.log_error(f"Lỗi render preview trang {page_number} (Mở khóa)", exc)
+
+        self._refresh_page_view()
+        self.content_stack.setCurrentIndex(1)
 
     def _show_empty_preview(self) -> None:
         self.preview_title.setText("Xem trước: —")
@@ -1227,36 +1680,36 @@ class ProtectFeatureWidget(QWidget):
     # Xem trước (Cột B) — copy logic từ merge_widget.py
     # ------------------------------------------------------------------
     def _build_preview_thumbs(self, total_pages: int) -> None:
+        # 1. Xóa sạch tất cả các item (bao gồm cả Widget và Stretch/Spacer cũ)
         while self.thumb_layout.count():
-            child = self.thumb_layout.takeAt(0)
-            widget = child.widget()
-            if widget is not None:
-                widget.deleteLater()
+            item = self.thumb_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
         self._preview_thumbs = []
 
+        if total_pages == 0:
+            return
+
+        # 2. Tạo từng Thumbnail
         for i in range(total_pages):
             page_number = i + 1
-            wrapper = QWidget()
-            wrapper_layout = QVBoxLayout(wrapper)
-            wrapper_layout.setContentsMargins(0, 0, 0, 0)
-            wrapper_layout.setSpacing(2)
-
             thumb = _PreviewThumb(page_number)
             thumb.clicked.connect(self._on_thumb_clicked)
-            wrapper_layout.addWidget(thumb, alignment=Qt.AlignHCenter)
+            
+            # Ép kích thước thumbnail không bao giờ vượt quá chiều cao chuẩn (72x94)
+            thumb.setFixedHeight(94)  # Hoặc thumb.setFixedHeight(_THUMB_H)
+            thumb.setFixedWidth(72)   # Hoặc thumb.setFixedWidth(_THUMB_W)
 
-            num_label = QLabel(str(page_number))
-            num_label.setAlignment(Qt.AlignCenter)
-            num_label.setStyleSheet(
-                f"color: {COLOR_TEXT_SECONDARY}; font-size: 11px; font-weight: 600; "
-                "background: transparent; border: none;"
-            )
-            wrapper_layout.addWidget(num_label)
-
-            self.thumb_layout.addWidget(wrapper)
+            # Thêm trực tiếp vào layout với căn giữa theo chiều ngang
+            self.thumb_layout.addWidget(thumb, 0, Qt.AlignHCenter | Qt.AlignTop)
             self._preview_thumbs.append(thumb)
 
-    def _build_preview_pages(self, total_pages: int) -> None:
+        # 3. Thêm Spacer dồn toàn bộ lên trên cùng
+        self.thumb_layout.addStretch(1)
+
+    def _build_preview_pages(self, total_pages: int,
+                              page_sizes: Optional[List[Tuple[float, float]]] = None) -> None:
         for frame in self._preview_pages.values():
             self.preview_layout.removeWidget(frame)
             frame.deleteLater()
@@ -1271,7 +1724,12 @@ class ProtectFeatureWidget(QWidget):
         self._current_preview_width = width
         for i in range(total_pages):
             page_number = i + 1
-            frame = _ProtectPreviewPage(page_number)
+            aspect_ratio = _DEFAULT_ASPECT_RATIO
+            if page_sizes and i < len(page_sizes):
+                w, h = page_sizes[i]
+                if w:
+                    aspect_ratio = h / w
+            frame = _ProtectPreviewPage(page_number, aspect_ratio)
             height = round(width * frame.aspect_ratio)
             frame.setFixedSize(width, height)
             self.preview_layout.addWidget(frame, alignment=Qt.AlignHCenter)

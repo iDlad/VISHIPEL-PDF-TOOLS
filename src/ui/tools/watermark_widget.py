@@ -50,6 +50,19 @@ Fix đồng bộ kích thước/nét chữ Preview ↔ File thật (phát hiện
 3. Font size đổi từ QSpinBox sang **QComboBox editable** (48-99): vừa xổ list các mốc có
    sẵn (48/54/60/66/72/78/84/90/96/99), vừa gõ tay số tự do, có `QIntValidator` chặn
    nhập ngoài khoảng và tự chỉnh lại khi rời khỏi ô nếu gõ giá trị không hợp lệ.
+
+Fix khoảng cách dải thumbnail bị giãn bất thường khi file ít trang (đại ca báo qua ảnh
+chụp thực tế): đã dựng lại đúng layout bằng PySide6 thật (kể cả trên X server thật qua
+Xvfb, không chỉ offscreen, để loại trừ khả năng giả do môi trường test) để cô lập nguyên
+nhân — `_PreviewThumb` có layout nội bộ (badge_row + image_label stretch=1) khiến
+`sizeHint()` mặc định trả về giá trị RẤT NHỎ (~28x44) dù đã `setFixedSize(72,94)`, làm
+widget cha (`wrapper` bọc thumb+số trang trong `_build_preview_thumbs`) tính sai kích
+thước và bị Qt cấp dư không gian khi còn trống chỗ (file ít trang) — biểu hiện thành
+khoảng cách giữa các thumbnail giãn ra hàng trăm px. Đã sửa 2 chỗ: (1) `_PreviewThumb`
+ghi đè `sizeHint()`/`minimumSizeHint()` trả đúng kích thước cố định; (2) mỗi `wrapper`
+trong `_build_preview_thumbs` được ép `setSizePolicy(Preferred, Fixed)` theo chiều dọc
+để không co giãn dù `addStretch()` ở cuối `thumb_layout` không tự hấp thụ hết 100%
+khoảng trống trong trường hợp này.
 """
 from __future__ import annotations
 
@@ -87,6 +100,7 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QButtonGroup,
     QDialog,
+    QSizePolicy,
 )
 
 from src.pdf_core import (
@@ -371,6 +385,20 @@ class _PreviewThumb(QFrame):
         layout.addWidget(self.image_label, 1)
 
         self._apply_style()
+
+    def sizeHint(self) -> QSize:
+        # QFrame có layout nội bộ (badge_row + image_label với stretch=1) khiến
+        # sizeHint() mặc định tính theo NỘI DUNG layout (rất nhỏ, ví dụ ~28x44) thay vì
+        # đúng kích thước cố định đã setFixedSize (72x94). Widget cha (`wrapper` trong
+        # _build_preview_thumbs) dựa vào sizeHint() này để tính khoảng cách/kích thước
+        # khi xếp nhiều thumbnail dọc — sizeHint sai khiến Qt cấp dư không gian cho các
+        # phần tử lân cận (VD label số trang bị kéo giãn ra hàng trăm px), gây khoảng
+        # cách giữa các thumbnail bị giãn bất thường khi file ít trang. Ghi đè trả đúng
+        # kích thước cố định để khớp với maximumSize()/setFixedSize() đã đặt.
+        return QSize(_THUMB_W, _THUMB_H)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(_THUMB_W, _THUMB_H)
 
     def _apply_style(self) -> None:
         if self.is_current:
@@ -1607,6 +1635,13 @@ class WatermarkFeatureWidget(QWidget):
         for i in range(total_pages):
             page_number = i + 1
             wrapper = QWidget()
+            # Ép KHÔNG co giãn theo chiều dọc — nếu không, khi file ít trang (còn nhiều
+            # khoảng trống trong thumb_scroll), Qt sẽ chia phần không gian thừa cho các
+            # `wrapper` này (dù đã có addStretch() ở cuối thumb_layout, addStretch() một
+            # mình không hấp thụ hết 100% khoảng trống khi các item lân cận vẫn ở chính
+            # sách Preferred mặc định) — biểu hiện là khoảng cách giữa các thumbnail bị
+            # giãn to bất thường. Xem thêm ghi chú sizeHint() trong _PreviewThumb.
+            wrapper.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             wrapper_layout = QVBoxLayout(wrapper)
             wrapper_layout.setContentsMargins(0, 0, 0, 0)
             wrapper_layout.setSpacing(2)

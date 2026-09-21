@@ -833,6 +833,15 @@ class EditFeatureWidget(QWidget):
         self.thumb_grid.setContentsMargins(28, 28, 28, 28)
         self.thumb_grid.setHorizontalSpacing(22)
         self.thumb_grid.setVerticalSpacing(22)
+
+        self.thumb_grid.setAlignment(Qt.AlignTop)
+
+# --- BỔ SUNG CẤU HÌNH CỐ ĐỊNH 3 CỘT ---
+        # Ép 3 cột thumbnail không co giãn và thêm cột index 3 làm khoảng trống đệm bên phải
+        for c in range(_GRID_COLUMNS):
+            self.thumb_grid.setColumnStretch(c, 1)
+        # ----------------------------------------
+        #         
         self.preview_scroll.setWidget(grid_container)
         a3_box_layout.addWidget(self.preview_scroll, stretch=1)
 
@@ -1073,7 +1082,7 @@ class EditFeatureWidget(QWidget):
             thumb.move_confirm_requested.connect(self._on_move_confirm_requested)
             thumb.move_cancel_requested.connect(self._on_move_cancel_requested)
             thumb.mark_toggled.connect(self._on_mark_toggled)
-            self.thumb_grid.addWidget(thumb, row, col)
+            self.thumb_grid.addWidget(thumb, row, col, alignment=Qt.AlignCenter)
             self._thumbnails.append(thumb)
             self._thumb_by_id[source_index] = thumb
         self._refresh_all_thumb_images()
@@ -1444,6 +1453,10 @@ class EditFeatureWidget(QWidget):
         for idx, thumb in enumerate(self._thumbnails):
             row, col = divmod(idx, _GRID_COLUMNS)
             self.thumb_grid.addWidget(thumb, row, col)
+
+        # Đặt rowStretch cho hàng tiếp theo sau hàng cuối cùng để thu hút khoảng trống thừa bên dưới
+        last_row = (len(self._thumbnails) - 1) // _GRID_COLUMNS + 1 if self._thumbnails else 0
+        self.thumb_grid.setRowStretch(last_row, 1)
 
         preview_layout = self.preview_scroll_b.widget().layout()
         while preview_layout.count():

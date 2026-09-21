@@ -588,6 +588,11 @@ class SplitFeatureWidget(QWidget):
         self.thumb_grid.setContentsMargins(28, 28, 28, 28)
         self.thumb_grid.setHorizontalSpacing(22)
         self.thumb_grid.setVerticalSpacing(22)
+# --- BỔ SUNG CẤU HÌNH CỐ ĐỊNH 3 CỘT ---
+
+        for c in range(_GRID_COLUMNS):
+            self.thumb_grid.setColumnStretch(c, 1)
+        # ----------------------------------------       
         self.preview_scroll.setWidget(grid_container)
 
         # Nhãn trạng thái rỗng — hiển thị khi chưa chọn file nào
@@ -894,6 +899,10 @@ class SplitFeatureWidget(QWidget):
             thumb.deleteLater()
         self._thumbnails.clear()
 
+        # Reset lại row stretch của layout lưới
+        for r in range(self.thumb_grid.rowCount()):
+            self.thumb_grid.setRowStretch(r, 0)
+
         for frame in self._preview_pages.values():
             self.preview_layout.removeWidget(frame)
             frame.deleteLater()
@@ -902,13 +911,22 @@ class SplitFeatureWidget(QWidget):
         self._current_preview_width = None
 
     def _build_real_grid(self, page_infos: List[PageInfo]) -> None:
+        total_pages = len(page_infos)
+
         for i in range(len(page_infos)):
             page_number = i + 1
             row, col = divmod(i, _GRID_COLUMNS)
             thumb = _PageThumbnail(page_number)
             thumb.clicked.connect(self._on_thumbnail_clicked)
-            self.thumb_grid.addWidget(thumb, row, col)
+
+            self.thumb_grid.addWidget(thumb, row, col, alignment=Qt.AlignCenter)
             self._thumbnails.append(thumb)
+
+        # --- BỔ SUNG HÀNG ĐỆM DỒN LÊN TRÊN ---
+        # Tính số hàng hiện tại và gán stretch=1 cho hàng tiếp theo để hút không gian thừa phía dưới
+        total_rows = (total_pages + _GRID_COLUMNS - 1) // _GRID_COLUMNS if total_pages > 0 else 0
+        self.thumb_grid.setRowStretch(total_rows, 1)
+        # --------------------------------------
 
     def _create_preview_frame(self, page_number: int, info: PageInfo, width: int) -> QFrame:
         if info.width and info.height:

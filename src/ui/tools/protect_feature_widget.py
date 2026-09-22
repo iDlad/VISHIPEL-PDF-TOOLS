@@ -1680,26 +1680,33 @@ class ProtectFeatureWidget(QWidget):
     # Xem trước (Cột B) — copy logic từ merge_widget.py
     # ------------------------------------------------------------------
     def _build_preview_thumbs(self, total_pages: int) -> None:
+        # 1. Xóa sạch tất cả các item (bao gồm cả Widget và Stretch/Spacer cũ)
         while self.thumb_layout.count():
-            child = self.thumb_layout.takeAt(0)
-            widget = child.widget()
-            if widget is not None:
-                widget.deleteLater()
+            item = self.thumb_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
         self._preview_thumbs = []
 
+        if total_pages == 0:
+            return
+
+        # 2. Tạo từng Thumbnail
         for i in range(total_pages):
             page_number = i + 1
-            wrapper = QWidget()
-            wrapper_layout = QVBoxLayout(wrapper)
-            wrapper_layout.setContentsMargins(0, 0, 0, 0)
-            wrapper_layout.setSpacing(2)
-
             thumb = _PreviewThumb(page_number)
             thumb.clicked.connect(self._on_thumb_clicked)
-            wrapper_layout.addWidget(thumb, alignment=Qt.AlignHCenter)
+            
+            # Ép kích thước thumbnail không bao giờ vượt quá chiều cao chuẩn (72x94)
+            thumb.setFixedHeight(94)  # Hoặc thumb.setFixedHeight(_THUMB_H)
+            thumb.setFixedWidth(72)   # Hoặc thumb.setFixedWidth(_THUMB_W)
 
-            self.thumb_layout.addWidget(wrapper)
+            # Thêm trực tiếp vào layout với căn giữa theo chiều ngang
+            self.thumb_layout.addWidget(thumb, 0, Qt.AlignHCenter | Qt.AlignTop)
             self._preview_thumbs.append(thumb)
+
+        # 3. Thêm Spacer dồn toàn bộ lên trên cùng
+        self.thumb_layout.addStretch(1)
 
     def _build_preview_pages(self, total_pages: int,
                               page_sizes: Optional[List[Tuple[float, float]]] = None) -> None:

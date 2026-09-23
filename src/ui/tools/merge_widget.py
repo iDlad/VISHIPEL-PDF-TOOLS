@@ -884,6 +884,7 @@ class MergeFeatureWidget(QWidget):
             f"QMenu::item:selected {{ background-color: #F3F4F6; color: {COLOR_TEXT_PRIMARY}; }}"
         )
         sort_menu.addAction("Tên (A → Z)", lambda: self._sort_files("name"))
+        sort_menu.addAction("Tên (Z → A)", lambda: self._sort_files("name_desc"))
         sort_menu.addAction("Dung lượng (lớn → nhỏ)", lambda: self._sort_files("size"))
         sort_menu.addAction("Số trang (nhiều → ít)", lambda: self._sort_files("pages"))
         self.sort_button.setMenu(sort_menu)
@@ -1241,6 +1242,8 @@ class MergeFeatureWidget(QWidget):
         ]
         if key == "name":
             rows_data.sort(key=lambda r: r[1].lower())
+        elif key == "name_desc":
+            rows_data.sort(key=lambda r: r[1].lower(), reverse=True)
         elif key == "size":
             rows_data.sort(key=lambda r: _parse_size_to_mb(r[2]), reverse=True)
         elif key == "pages":

@@ -30,6 +30,7 @@ Vận hành có/không Ca, hoặc Phát sinh nhiều khối).
 """
 from __future__ import annotations
 
+import calendar
 import copy
 import datetime
 import os
@@ -37,17 +38,17 @@ import uuid
 from typing import Dict, List, Optional, Tuple
 
 import qtawesome as qta
-from PySide6.QtCore import Qt, Signal, QSize, QPoint, QDate
+from PySide6.QtCore import Qt, Signal, QSize, QPoint, QThread
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPixmap
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QFormLayout,
     QLabel,
     QLineEdit,
     QPushButton,
     QToolButton,
+    QScrollArea,
     QFrame,
     QFileDialog,
     QListWidget,
@@ -60,7 +61,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QSpinBox,
     QCheckBox,
-    QDateEdit,
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
@@ -118,7 +118,23 @@ _DROP_INDICATOR_HEIGHT = 4
 _DROP_INDICATOR_DOT_SIZE = 10
 _DROP_DEADZONE_RATIO = 0.20
 
-_PREVIEW_THUMB_WIDTH = 260
+# Cột B — Trang Preview: hằng số cho dải thumbnail trái + khung cuộn lớn bên
+# phải + Zoom, ĐÚNG như merge_widget.py (chỉ khác _BADGE_SIZE đã dùng cho badge
+# thứ tự ở Cột A nên đặt tên riêng _THUMB_BADGE_SIZE để tránh đụng nhau).
+_THUMB_RENDER_WIDTH = 220
+_DETAIL_RENDER_WIDTH = 1200
+_THUMB_STRIP_WIDTH = 115
+_THUMB_W, _THUMB_H = 72, 94
+_THUMB_BORDER_INSET = 3
+_THUMB_BADGE_SIZE = 18
+_ZOOM_MIN = 0.5
+_ZOOM_MAX = 2.0
+_ZOOM_STEP = 0.15
+_ZOOM_DEFAULT = 1.0
+_PREVIEW_SIDE_MARGIN = 12
+_PREVIEW_MIN_PAGE_WIDTH = 220
+_PREVIEW_PAGE_WIDTH_FALLBACK = 340
+_PREVIEW_PAGE_HEIGHT_DEFAULT = 460
 
 _SCROLLBAR_QSS = f"""
     QScrollBar:vertical {{
@@ -207,6 +223,119 @@ def _preview_generate_name(profile: dict, values: dict, batch_size: int = 1) -> 
         elif btype == "manual":
             segments.append(values.get("manual_sample") or "TenNhapTay")
     return ("_".join(segments) if segments else "ten_file") + ext
+
+
+def _zoom_button_style() -> str:
+    """Style cho 2 nút Zoom In/Out ở header Cột B — đồng bộ với merge_widget.py."""
+    return f"""
+        QToolButton {{
+            background-color: white;
+            border: 1.5px solid {COLOR_BORDER_STRONG};
+            border-radius: 6px;
+        }}
+        QToolButton:hover:enabled {{
+            background-color: {COLOR_ACCENT_LIGHT};
+            border-color: {COLOR_ACCENT};
+        }}
+        QToolButton:pressed:enabled {{
+            background-color: {COLOR_ACCENT};
+        }}
+        QToolButton:disabled {{
+            background-color: #F3F4F6;
+            border-color: {COLOR_BORDER};
+        }}
+        """
+
+
+def _checkbox_qss() -> str:
+    """Style tường minh cho QCheckBox — bắt buộc phải có vì mặc định indicator
+    của checkbox lấy màu theo palette hệ điều hành, trên máy đang bật dark mode
+    có thể vẽ ra màu trắng-trên-trắng khiến ô tick gần như vô hình."""
+    return f"""
+        QCheckBox {{
+            color: {COLOR_TEXT_PRIMARY};
+            font-size: 13px;
+            font-weight: 600;
+            spacing: 8px;
+            background: transparent;
+        }}
+        QCheckBox::indicator {{
+            width: 18px;
+            height: 18px;
+            border: 1.5px solid {COLOR_BORDER_STRONG};
+            border-radius: 4px;
+            background-color: white;
+        }}
+        QCheckBox::indicator:hover {{
+            border-color: {COLOR_ACCENT};
+        }}
+        QCheckBox::indicator:checked {{
+            background-color: {COLOR_ACCENT};
+            border-color: {COLOR_ACCENT};
+        }}
+    """
+
+
+def _styled_spin(minimum: int, maximum: int, value: int) -> QSpinBox:
+    spin = QSpinBox()
+    spin.setRange(minimum, maximum)
+    spin.setValue(value)
+    spin.setFixedHeight(CONTROL_HEIGHT)
+    spin.setStyleSheet(
+        f"""
+        QSpinBox {{
+            background-color: white; color: {COLOR_TEXT_PRIMARY};
+            border: 1.5px solid {COLOR_BORDER_STRONG}; border-radius: {CORNER_RADIUS}px;
+            padding: 0 8px; font-size: 13px;
+        }}
+        QSpinBox:focus {{ border-color: {COLOR_ACCENT}; }}
+        """
+    )
+    return spin
+
+
+def _styled_combo(items: List[str]) -> QComboBox:
+    combo = QComboBox()
+    combo.addItems(items)
+    combo.setFixedHeight(CONTROL_HEIGHT)
+    combo.setStyleSheet(
+        f"""
+        QComboBox {{
+            background-color: white; color: {COLOR_TEXT_PRIMARY};
+            border: 1.5px solid {COLOR_BORDER_STRONG}; border-radius: {CORNER_RADIUS}px;
+            padding: 0 10px; font-size: 13px;
+        }}
+        QComboBox:focus {{ border-color: {COLOR_ACCENT}; }}
+        QComboBox::drop-down {{ border: none; }}
+        QComboBox QAbstractItemView {{
+            background-color: white;
+            color: {COLOR_TEXT_PRIMARY};
+            border: 1px solid {COLOR_BORDER};
+            selection-background-color: {COLOR_ACCENT_LIGHT};
+            selection-color: {COLOR_TEXT_PRIMARY};
+            outline: none;
+        }}
+        """
+    )
+    return combo
+
+
+def _styled_line_edit(placeholder: str = "") -> QLineEdit:
+    edit = QLineEdit()
+    edit.setPlaceholderText(placeholder)
+    edit.setFixedHeight(CONTROL_HEIGHT)
+    edit.setStyleSheet(
+        f"""
+        QLineEdit {{
+            background-color: white; color: {COLOR_TEXT_PRIMARY};
+            border: 1.5px solid {COLOR_BORDER_STRONG}; border-radius: {CORNER_RADIUS}px;
+            padding: 0 10px; font-size: 13px;
+        }}
+        QLineEdit:focus {{ border-color: {COLOR_ACCENT}; }}
+        QLineEdit:read-only {{ background-color: {_PILL_BG}; color: {COLOR_TEXT_SECONDARY}; }}
+        """
+    )
+    return edit
 
 
 # ----------------------------------------------------------------------
@@ -612,90 +741,587 @@ class _FileRow(QFrame):
 
 
 # ----------------------------------------------------------------------
-# Cột B — Trang "Preview" (đọc thật số trang/kích thước, render thumbnail trang 1)
+# Cột B — Trang "Preview": ĐÚNG như cách hiển thị Cột B của merge_widget.py —
+# dải thumbnail trái ("mục lục" nhảy nhanh) + khung cuộn lớn bên phải xem toàn
+# bộ trang liên tục (kéo chuột trái để pan khi đã zoom), có Zoom In/Out ở
+# header, ảnh render nền qua QThread không chặn UI. Khác biệt duy nhất so với
+# Gộp file: Cột B ở đây luôn xem đúng 1 file đang chọn ở Cột A (không có khái
+# niệm gộp nhiều file).
 # ----------------------------------------------------------------------
-class _PreviewPage(QWidget):
+class _PreviewThumb(QFrame):
+    clicked = Signal(int)
+
+    def __init__(self, page_number: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.page_number = page_number
+        self.is_current = False
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedSize(_THUMB_W, _THUMB_H)
+
+        inset = _THUMB_BORDER_INSET
+        self.image_label = QLabel(self)
+        self.image_label.setGeometry(inset, inset, _THUMB_W - inset * 2, _THUMB_H - inset * 2)
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setScaledContents(True)
+        self.image_label.setStyleSheet("background: transparent; border: none;")
+        self.image_label.lower()
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(0)
+
+        badge_row = QHBoxLayout()
+        self.badge = QLabel(str(page_number))
+        self.badge.setFixedSize(_THUMB_BADGE_SIZE, _THUMB_BADGE_SIZE)
+        self.badge.setAlignment(Qt.AlignCenter)
+        badge_row.addWidget(self.badge)
+        badge_row.addStretch()
+        layout.addLayout(badge_row)
+        layout.addStretch()
+
+        self._apply_style()
+
+    def set_image(self, pixmap: QPixmap) -> None:
+        self.image_label.setPixmap(pixmap)
+
+    def _apply_style(self) -> None:
+        if self.is_current:
+            self.setStyleSheet(
+                f"QFrame {{ background-color: {COLOR_ACCENT_LIGHT}; border: 2px solid {COLOR_ACCENT}; border-radius: 6px; }}"
+            )
+            self.badge.setStyleSheet(
+                f"background-color: {COLOR_ACCENT}; color: white; font-size: 10px; font-weight: 700; "
+                f"border-radius: {_THUMB_BADGE_SIZE // 2}px; border: none;"
+            )
+        else:
+            self.setStyleSheet(
+                f"QFrame {{ background-color: white; border: 1px solid {COLOR_BORDER}; border-radius: 6px; }}"
+            )
+            self.badge.setStyleSheet("background-color: transparent; color: transparent; border: none;")
+
+    def set_current(self, current: bool) -> None:
+        self.is_current = current
+        self._apply_style()
+
+    def mousePressEvent(self, event) -> None:
+        super().mousePressEvent(event)
+        self.clicked.emit(self.page_number)
+
+
+class _PannablePreviewScrollArea(QScrollArea):
+    """Cuộn chuột bình thường + kéo chuột trái để pan khi nội dung vượt khung —
+    đồng bộ với merge_widget.py/split_widget.py."""
+
+    viewport_resized = Signal()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._renderer = PageRenderer()
+        self._panning = False
+        self._pan_start_pos = None
+        self._pan_start_h = 0
+        self._pan_start_v = 0
+        self.viewport().setCursor(Qt.OpenHandCursor)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.viewport_resized.emit()
+
+    def _event_pos(self, event):
+        if hasattr(event, "position"):
+            return event.position().toPoint()
+        return event.pos()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._panning = True
+            self._pan_start_pos = self._event_pos(event)
+            self._pan_start_h = self.horizontalScrollBar().value()
+            self._pan_start_v = self.verticalScrollBar().value()
+            self.viewport().setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._panning and self._pan_start_pos is not None:
+            delta = self._event_pos(event) - self._pan_start_pos
+            self.horizontalScrollBar().setValue(self._pan_start_h - delta.x())
+            self.verticalScrollBar().setValue(self._pan_start_v - delta.y())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self._panning:
+            self._panning = False
+            self._pan_start_pos = None
+            self.viewport().setCursor(Qt.OpenHandCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
+class _PreviewPageFrame(QFrame):
+    """1 khung trang trong khung cuộn lớn bên phải — hiển thị ảnh trang thật."""
+
+    def __init__(self, page_number: int, aspect_ratio: float, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.page_number = page_number
+        self.aspect_ratio = aspect_ratio
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
-        layout.setAlignment(Qt.AlignTop)
+        layout.setAlignment(Qt.AlignCenter)
 
-        self.thumb_frame = QFrame()
-        self.thumb_frame.setFixedSize(_PREVIEW_THUMB_WIDTH, round(_PREVIEW_THUMB_WIDTH * 1.35))
-        self.thumb_frame.setStyleSheet(
-            f"QFrame {{ background-color: {COLOR_CONTENT_BG}; border: 1px solid {COLOR_BORDER}; border-radius: 10px; }}"
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setScaledContents(True)
+        self.image_label.setStyleSheet("background: transparent; border: none;")
+        layout.addWidget(self.image_label)
+
+        self.setStyleSheet(
+            f"QFrame {{ background-color: white; border: 1px solid {COLOR_BORDER}; border-radius: 6px; }}"
         )
-        thumb_layout = QVBoxLayout(self.thumb_frame)
-        thumb_layout.setContentsMargins(0, 0, 0, 0)
-        thumb_layout.setAlignment(Qt.AlignCenter)
-        self.thumb_image = QLabel()
-        self.thumb_image.setAlignment(Qt.AlignCenter)
-        self.thumb_image.setScaledContents(False)
-        self.thumb_image.setStyleSheet("background: transparent; border: none;")
-        thumb_layout.addWidget(self.thumb_image)
-        layout.addWidget(self.thumb_frame, alignment=Qt.AlignHCenter)
 
-        self.file_name_label = QLabel("Chọn 1 file ở danh sách bên trái để xem trước")
-        self.file_name_label.setAlignment(Qt.AlignCenter)
-        self.file_name_label.setWordWrap(True)
-        self.file_name_label.setStyleSheet(
+    def set_image(self, pixmap: QPixmap) -> None:
+        self.image_label.setPixmap(pixmap)
+
+
+class _PreviewRenderWorker(QThread):
+    thumb_ready = Signal(int, int, bytes)
+    page_ready = Signal(int, int, bytes)
+    render_error = Signal(int, str)
+
+    def __init__(self, token: int, path: str, page_indexes: List[int],
+                 renderer: PageRenderer, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.token = token
+        self.path = path
+        self.page_indexes = page_indexes
+        self.renderer = renderer
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    def run(self) -> None:
+        for page_index in self.page_indexes:
+            if self._cancelled:
+                return
+            try:
+                thumb_bytes = self.renderer.render_thumbnail(self.path, page_index, max_width=_THUMB_RENDER_WIDTH)
+                self.thumb_ready.emit(self.token, page_index, thumb_bytes)
+            except (CorruptedFileError, PasswordProtectedError, FileLockedError) as exc:
+                self.render_error.emit(self.token, str(exc))
+                return
+            except Exception:
+                pass
+
+            if self._cancelled:
+                return
+            try:
+                page_bytes = self.renderer.render_page_detail(self.path, page_index, target_width=_DETAIL_RENDER_WIDTH)
+                self.page_ready.emit(self.token, page_index, page_bytes)
+            except Exception:
+                pass
+
+
+class _PreviewPage(QWidget):
+    render_error = Signal(str)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._renderer = PageRenderer()
+        self._render_worker: Optional[_PreviewRenderWorker] = None
+        self._render_token = 0
+        self._preview_thumbs: List[_PreviewThumb] = []
+        self._preview_pages: Dict[int, _PreviewPageFrame] = {}
+        self._current_page = 0
+        self._current_total_pages = 0
+        self._current_file_name: Optional[str] = None
+        self._zoom_level = _ZOOM_DEFAULT
+        self._current_preview_width: Optional[int] = None
+        self._initial_width_applied = False
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(12)
+
+        header_row = QHBoxLayout()
+        file_icon = QLabel()
+        file_icon.setPixmap(qta.icon("mdi6.file-outline", color=COLOR_TEXT_SECONDARY).pixmap(QSize(18, 18)))
+        file_icon.setStyleSheet("background: transparent; border: none;")
+        header_row.addWidget(file_icon)
+
+        self.preview_title = QLabel("Xem trước: —")
+        self.preview_title.setStyleSheet(
             f"color: {COLOR_TEXT_PRIMARY}; font-size: 14px; font-weight: 700; "
             "background: transparent; border: none;"
         )
-        layout.addWidget(self.file_name_label)
+        header_row.addWidget(self.preview_title)
+        header_row.addStretch()
 
-        self.file_meta_label = QLabel("")
-        self.file_meta_label.setAlignment(Qt.AlignCenter)
-        self.file_meta_label.setStyleSheet(
-            f"color: {COLOR_TEXT_SECONDARY}; font-size: 12px; background: transparent; border: none;"
+        self.zoom_out_btn = QToolButton()
+        self.zoom_out_btn.setCursor(Qt.PointingHandCursor)
+        self.zoom_out_btn.setIcon(qta.icon("mdi6.magnify-minus-outline", color=COLOR_TEXT_PRIMARY))
+        self.zoom_out_btn.setIconSize(QSize(16, 16))
+        self.zoom_out_btn.setFixedSize(26, 26)
+        self.zoom_out_btn.setStyleSheet(_zoom_button_style())
+        self.zoom_out_btn.setToolTip("Thu nhỏ (-15%)")
+        self.zoom_out_btn.clicked.connect(self._on_zoom_out_clicked)
+        header_row.addWidget(self.zoom_out_btn)
+
+        self.zoom_percent_label = QLabel(f"{round(_ZOOM_DEFAULT * 100)}%")
+        self.zoom_percent_label.setAlignment(Qt.AlignCenter)
+        self.zoom_percent_label.setFixedWidth(42)
+        self.zoom_percent_label.setStyleSheet(
+            f"color: {COLOR_TEXT_SECONDARY}; font-size: 12px; font-weight: 600; "
+            "background: transparent; border: none;"
         )
-        layout.addWidget(self.file_meta_label)
+        header_row.addWidget(self.zoom_percent_label)
 
-        layout.addStretch()
-        self._set_placeholder_icon()
+        self.zoom_in_btn = QToolButton()
+        self.zoom_in_btn.setCursor(Qt.PointingHandCursor)
+        self.zoom_in_btn.setIcon(qta.icon("mdi6.magnify-plus-outline", color=COLOR_TEXT_PRIMARY))
+        self.zoom_in_btn.setIconSize(QSize(16, 16))
+        self.zoom_in_btn.setFixedSize(26, 26)
+        self.zoom_in_btn.setStyleSheet(_zoom_button_style())
+        self.zoom_in_btn.setToolTip("Phóng to (+15%)")
+        self.zoom_in_btn.clicked.connect(self._on_zoom_in_clicked)
+        header_row.addWidget(self.zoom_in_btn)
 
-    def _set_placeholder_icon(self) -> None:
-        self.thumb_image.setPixmap(
-            qta.icon("mdi6.file-pdf-box", color=COLOR_BORDER_STRONG).pixmap(QSize(96, 96))
+        root.addLayout(header_row)
+
+        body_row = QHBoxLayout()
+        body_row.setSpacing(10)
+
+        self.thumb_scroll = QScrollArea()
+        self.thumb_scroll.setFixedWidth(_THUMB_STRIP_WIDTH)
+        self.thumb_scroll.setWidgetResizable(True)
+        self.thumb_scroll.setStyleSheet(f"QScrollArea {{ background: transparent; border: none; }} {_SCROLLBAR_QSS}")
+        self.thumb_container = QWidget()
+        self.thumb_container.setStyleSheet("background: transparent;")
+        self.thumb_layout = QVBoxLayout(self.thumb_container)
+        self.thumb_layout.setContentsMargins(2, 2, 6, 2)
+        self.thumb_layout.setSpacing(10)
+        self.thumb_layout.setAlignment(Qt.AlignTop)
+        self.thumb_scroll.setWidget(self.thumb_container)
+        body_row.addWidget(self.thumb_scroll)
+
+        self.preview_scroll_b = _PannablePreviewScrollArea()
+        self.preview_scroll_b.setWidgetResizable(True)
+        self.preview_scroll_b.setStyleSheet(
+            f"""
+            QScrollArea {{
+                background-color: {COLOR_CONTENT_BG};
+                border: 1px solid {COLOR_BORDER};
+                border-radius: 10px;
+            }}
+            {_SCROLLBAR_QSS}
+            """
         )
+        self.preview_scroll_b.viewport_resized.connect(self._on_preview_viewport_resized)
 
+        preview_pages_container = QWidget()
+        preview_pages_container.setStyleSheet("background: transparent;")
+        self.preview_layout = QVBoxLayout(preview_pages_container)
+        self.preview_layout.setContentsMargins(_PREVIEW_SIDE_MARGIN, 12, _PREVIEW_SIDE_MARGIN, 12)
+        self.preview_layout.setSpacing(16)
+        self.preview_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        self.preview_scroll_b.setWidget(preview_pages_container)
+
+        body_row.addWidget(self.preview_scroll_b, 1)
+        root.addLayout(body_row, 1)
+
+        self._update_zoom_buttons_state()
+
+    # ------------------------------------------------------------------
     def show_empty(self) -> None:
-        self._set_placeholder_icon()
-        self.file_name_label.setText("Chọn 1 file ở danh sách bên trái để xem trước")
-        self.file_meta_label.setText("")
+        self._cancel_active_render()
+        self._current_file_name = None
+        self._current_total_pages = 0
+        self._current_page = 0
+        self.preview_title.setText("Xem trước: —")
+        self._build_preview_thumbs([])
+        self._build_preview_pages([])
 
     def show_file(self, path: str) -> None:
+        self._cancel_active_render()
         name = os.path.basename(path)
+        self._current_file_name = name
+        self.preview_title.setText(f"Xem trước: {name}")
+
         try:
             infos: List[PageInfo] = list_page_infos(path)
-            size_text = _format_file_size(os.path.getsize(path))
         except (CorruptedFileError, PasswordProtectedError, FileLockedError, OSError) as exc:
-            self._set_placeholder_icon()
-            self.file_name_label.setText(name)
-            self.file_meta_label.setText(f"Không thể đọc file: {exc}")
-            return
+            self.render_error.emit(f"Không thể xem trước '{name}': {exc}")
+            infos = []
+        except Exception as exc:
+            self.render_error.emit(f"Không thể xem trước '{name}': {exc}")
+            infos = []
 
-        self.file_name_label.setText(name)
-        self.file_meta_label.setText(f"{size_text}  •  {len(infos)} trang")
+        self._current_total_pages = len(infos)
+        self._current_page = 1 if infos else 0
+        self._build_preview_thumbs(infos)
+        self._build_preview_pages(infos)
+        self._refresh_page_view()
 
         if infos:
-            try:
-                data = self._renderer.render_thumbnail(path, 0, max_width=_PREVIEW_THUMB_WIDTH)
-                pixmap = QPixmap()
-                pixmap.loadFromData(data, "PNG")
-                self.thumb_image.setPixmap(pixmap)
-            except Exception:
-                self._set_placeholder_icon()
-        else:
-            self._set_placeholder_icon()
+            self._start_render_worker(path, infos)
+
+    # ------------------------------------------------------------------
+    def _build_preview_thumbs(self, infos: List[PageInfo]) -> None:
+        while self.thumb_layout.count():
+            child = self.thumb_layout.takeAt(0)
+            widget = child.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._preview_thumbs = []
+
+        for info in infos:
+            page_number = info.source_index + 1
+            wrapper = QWidget()
+            wrapper_layout = QVBoxLayout(wrapper)
+            wrapper_layout.setContentsMargins(0, 0, 0, 0)
+            wrapper_layout.setSpacing(2)
+            wrapper_layout.setAlignment(Qt.AlignTop)
+
+            thumb = _PreviewThumb(page_number)
+            thumb.clicked.connect(self._on_thumb_clicked)
+            wrapper_layout.addWidget(thumb, alignment=Qt.AlignHCenter)
+
+            num_label = QLabel(str(page_number))
+            num_label.setAlignment(Qt.AlignCenter)
+            num_label.setStyleSheet(
+                f"color: {COLOR_TEXT_SECONDARY}; font-size: 11px; font-weight: 600; "
+                "background: transparent; border: none;"
+            )
+            wrapper_layout.addWidget(num_label)
+            wrapper.setFixedHeight(wrapper.sizeHint().height())
+
+            self.thumb_layout.addWidget(wrapper, alignment=Qt.AlignTop)
+            self._preview_thumbs.append(thumb)
+
+    def _build_preview_pages(self, infos: List[PageInfo]) -> None:
+        for frame in self._preview_pages.values():
+            self.preview_layout.removeWidget(frame)
+            frame.deleteLater()
+        self._preview_pages.clear()
+        self._current_preview_width = None
+
+        if not infos:
+            self._update_zoom_buttons_state()
+            return
+
+        width = self._compute_preview_width()
+        self._current_preview_width = width
+        for info in infos:
+            page_number = info.source_index + 1
+            if info.rotation in (90, 270):
+                eff_w, eff_h = info.height, info.width
+            else:
+                eff_w, eff_h = info.width, info.height
+            aspect_ratio = (
+                eff_h / eff_w if eff_w else
+                _PREVIEW_PAGE_HEIGHT_DEFAULT / _PREVIEW_PAGE_WIDTH_FALLBACK
+            )
+
+            frame = _PreviewPageFrame(page_number, aspect_ratio)
+            height = round(width * aspect_ratio)
+            frame.setFixedSize(width, height)
+            self.preview_layout.addWidget(frame, alignment=Qt.AlignHCenter)
+            self._preview_pages[page_number] = frame
+
+        self._update_zoom_buttons_state()
+
+    # ------------------------------------------------------------------ render nền
+    def _cancel_active_render(self) -> None:
+        if self._render_worker is not None:
+            self._render_worker.cancel()
+            self._render_worker.wait()
+            self._render_worker = None
+
+    def _start_render_worker(self, path: str, infos: List[PageInfo]) -> None:
+        self._render_token += 1
+        token = self._render_token
+        page_indexes = [info.source_index for info in infos]
+        worker = _PreviewRenderWorker(token, path, page_indexes, self._renderer, self)
+        worker.thumb_ready.connect(self._on_thumb_ready)
+        worker.page_ready.connect(self._on_page_ready)
+        worker.render_error.connect(self._on_render_error)
+        worker.finished.connect(lambda w=worker: self._on_worker_finished(w))
+        self._render_worker = worker
+        worker.start()
+
+    def _on_worker_finished(self, worker: _PreviewRenderWorker) -> None:
+        if self._render_worker is worker:
+            self._render_worker = None
+        worker.deleteLater()
+
+    def _on_thumb_ready(self, token: int, page_index: int, data: bytes) -> None:
+        if token != self._render_token:
+            return
+        pixmap = QPixmap()
+        pixmap.loadFromData(data, "PNG")
+        if 0 <= page_index < len(self._preview_thumbs):
+            self._preview_thumbs[page_index].set_image(pixmap)
+
+    def _on_page_ready(self, token: int, page_index: int, data: bytes) -> None:
+        if token != self._render_token:
+            return
+        pixmap = QPixmap()
+        pixmap.loadFromData(data, "PNG")
+        frame = self._preview_pages.get(page_index + 1)
+        if frame is not None:
+            frame.set_image(pixmap)
+
+    def _on_render_error(self, token: int, message: str) -> None:
+        if token != self._render_token:
+            return
+        self.render_error.emit(f"Lỗi khi render xem trước: {message}")
+
+    def _on_thumb_clicked(self, page_number: int) -> None:
+        self._current_page = page_number
+        self._refresh_page_view()
+
+    def _refresh_page_view(self) -> None:
+        for thumb in self._preview_thumbs:
+            thumb.set_current(thumb.page_number == self._current_page)
+        if 0 <= self._current_page - 1 < len(self._preview_thumbs):
+            current_thumb = self._preview_thumbs[self._current_page - 1]
+            self.thumb_scroll.ensureWidgetVisible(current_thumb, 0, 20)
+        current_frame = self._preview_pages.get(self._current_page)
+        if current_frame is not None:
+            self.preview_scroll_b.ensureWidgetVisible(current_frame, 0, 0)
+
+    # ------------------------------------------------------------------ zoom
+    def _fit_base_width(self) -> int:
+        viewport_width = self.preview_scroll_b.viewport().width()
+        usable = viewport_width - (_PREVIEW_SIDE_MARGIN * 2)
+        return max(_PREVIEW_MIN_PAGE_WIDTH, usable)
+
+    def _compute_preview_width(self) -> int:
+        base_width = self._fit_base_width()
+        return max(_PREVIEW_MIN_PAGE_WIDTH, round(base_width * self._zoom_level))
+
+    def _apply_preview_zoom(self) -> None:
+        if not self._preview_pages:
+            self._update_zoom_buttons_state()
+            self._update_zoom_percent_label()
+            return
+
+        new_width = self._compute_preview_width()
+        if new_width == self._current_preview_width:
+            self._update_zoom_buttons_state()
+            self._update_zoom_percent_label()
+            return
+        self._current_preview_width = new_width
+
+        for frame in self._preview_pages.values():
+            new_height = round(new_width * frame.aspect_ratio)
+            frame.setFixedSize(new_width, new_height)
+
+        self._update_zoom_buttons_state()
+        self._update_zoom_percent_label()
+
+    def _on_zoom_in_clicked(self) -> None:
+        self._set_zoom_level(self._zoom_level + _ZOOM_STEP)
+
+    def _on_zoom_out_clicked(self) -> None:
+        self._set_zoom_level(self._zoom_level - _ZOOM_STEP)
+
+    def _set_zoom_level(self, new_level: float) -> None:
+        clamped = max(_ZOOM_MIN, min(_ZOOM_MAX, round(new_level, 2)))
+        if abs(clamped - self._zoom_level) < 1e-6:
+            return
+        self._zoom_level = clamped
+        self._apply_preview_zoom()
+
+    def _update_zoom_buttons_state(self) -> None:
+        has_pages = bool(self._preview_pages)
+        self.zoom_in_btn.setEnabled(has_pages and self._zoom_level < _ZOOM_MAX - 1e-6)
+        self.zoom_out_btn.setEnabled(has_pages and self._zoom_level > _ZOOM_MIN + 1e-6)
+
+    def _update_zoom_percent_label(self) -> None:
+        self.zoom_percent_label.setText(f"{round(self._zoom_level * 100)}%")
+
+    def _on_preview_viewport_resized(self) -> None:
+        if self._preview_pages:
+            self._apply_preview_zoom()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not self._initial_width_applied and self._preview_pages:
+            self._initial_width_applied = True
+            self._current_preview_width = None
+            self._apply_preview_zoom()
 
 
 # ----------------------------------------------------------------------
-# Cột B — Trang "Form nhập liệu" (đổi theo đúng hồ sơ đang chọn, mục 6.2)
+# Khung nhãn dạng "badge" + control nhập liệu — đúng theo giao diện phiên bản
+# cũ đại ca đang dùng (ảnh "Trung tâm điều khiển - OPC" / "Điểm phát - TX"):
+# mỗi hàng có 1 nhãn nổi bật màu Accent bên trái, control nhập bên phải.
+# ----------------------------------------------------------------------
+class _LabeledFieldRow(QWidget):
+    def __init__(self, label_text: str, control: QWidget, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        badge = QLabel(label_text)
+        badge.setFixedHeight(CONTROL_HEIGHT)
+        badge.setMinimumWidth(150)
+        badge.setAlignment(Qt.AlignCenter)
+        badge.setStyleSheet(
+            f"background-color: {COLOR_ACCENT}; color: white; font-size: 12px; font-weight: 700; "
+            f"border-radius: {CORNER_RADIUS}px; padding: 0 10px; border: none;"
+        )
+        layout.addWidget(badge)
+        layout.addWidget(control, 1)
+
+
+class _SplitDateInput(QWidget):
+    """3 ô Ngày/Tháng/Năm tách riêng (đúng ảnh giao diện cũ đại ca gửi), thay
+    cho lịch chọn ngày kiểu QDateEdit — mỗi ô có nhãn badge riêng."""
+
+    date_changed = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        today = datetime.date.today()
+        self.day_spin = _styled_spin(1, 31, today.day)
+        self.month_spin = _styled_spin(1, 12, today.month)
+        self.year_spin = _styled_spin(2000, 2100, today.year)
+        for spin in (self.day_spin, self.month_spin, self.year_spin):
+            spin.valueChanged.connect(self.date_changed)
+
+        layout.addWidget(_LabeledFieldRow("Ngày bắt đầu / DD", self.day_spin))
+        layout.addWidget(_LabeledFieldRow("Tháng / MM", self.month_spin))
+        layout.addWidget(_LabeledFieldRow("Năm / YYYY", self.year_spin))
+
+    def date(self) -> datetime.date:
+        year, month = self.year_spin.value(), self.month_spin.value()
+        day = min(self.day_spin.value(), calendar.monthrange(year, month)[1])
+        return datetime.date(year, month, day)
+
+    def set_date(self, value: datetime.date) -> None:
+        for spin in (self.day_spin, self.month_spin, self.year_spin):
+            spin.blockSignals(True)
+        self.day_spin.setValue(value.day)
+        self.month_spin.setValue(value.month)
+        self.year_spin.setValue(value.year)
+        for spin in (self.day_spin, self.month_spin, self.year_spin):
+            spin.blockSignals(False)
+
+
+# ----------------------------------------------------------------------
+# Cột B — Trang "Form nhập liệu" (đổi theo đúng hồ sơ đang chọn, mục 6.2 +
+# giao diện tham khảo phiên bản cũ đại ca gửi cho phần Vận hành)
 # ----------------------------------------------------------------------
 class _RenameFormPage(QWidget):
     values_changed = Signal()
@@ -703,6 +1329,11 @@ class _RenameFormPage(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._profile: Optional[dict] = None
+        self._split_date: Optional[_SplitDateInput] = None
+        self._ca_combo: Optional[QComboBox] = None
+        self._auto_number_spin: Optional[QSpinBox] = None
+        self._auto_step_spin: Optional[QSpinBox] = None
+        self._manual_sample_edit: Optional[QLineEdit] = None
 
         self.root_layout = QVBoxLayout(self)
         self.root_layout.setContentsMargins(0, 0, 0, 0)
@@ -716,16 +1347,17 @@ class _RenameFormPage(QWidget):
         )
         self.root_layout.addWidget(self.profile_title)
 
-        self.form_layout = QFormLayout()
-        self.form_layout.setSpacing(10)
-        self.form_layout.setLabelAlignment(Qt.AlignLeft)
-        self.root_layout.addLayout(self.form_layout)
+        self.fields_layout = QVBoxLayout()
+        self.fields_layout.setSpacing(10)
+        self.root_layout.addLayout(self.fields_layout)
 
         self.root_layout.addStretch()
 
+        # Khung "Xem trước tên file" — KHÔNG dùng viền cam (đã bỏ theo yêu cầu),
+        # chỉ tô nền xám nhạt cho dễ phân biệt với các trường nhập liệu ở trên.
         preview_box = QFrame()
         preview_box.setStyleSheet(
-            f"QFrame {{ background-color: {COLOR_ACCENT_LIGHT}; border: 1px solid {COLOR_ACCENT}; border-radius: 10px; }}"
+            f"QFrame {{ background-color: {_PILL_BG}; border: none; border-radius: 10px; }}"
         )
         preview_box_layout = QVBoxLayout(preview_box)
         preview_box_layout.setContentsMargins(14, 10, 14, 10)
@@ -742,90 +1374,17 @@ class _RenameFormPage(QWidget):
         preview_box_layout.addWidget(self.preview_name_label)
         self.root_layout.addWidget(preview_box)
 
-        self._date_edit: Optional[QDateEdit] = None
-        self._ca_combo: Optional[QComboBox] = None
-        self._auto_number_spin: Optional[QSpinBox] = None
-        self._auto_step_spin: Optional[QSpinBox] = None
-        self._manual_sample_edit: Optional[QLineEdit] = None
-
     def _clear_form(self) -> None:
-        while self.form_layout.rowCount():
-            self.form_layout.removeRow(0)
-        self._date_edit = None
+        while self.fields_layout.count():
+            item = self.fields_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._split_date = None
         self._ca_combo = None
         self._auto_number_spin = None
         self._auto_step_spin = None
         self._manual_sample_edit = None
-
-    @staticmethod
-    def _styled_date_edit() -> QDateEdit:
-        edit = QDateEdit(QDate.currentDate())
-        edit.setCalendarPopup(True)
-        edit.setDisplayFormat("dd/MM/yyyy")
-        edit.setFixedHeight(CONTROL_HEIGHT)
-        edit.setStyleSheet(
-            f"""
-            QDateEdit {{
-                background-color: white; color: {COLOR_TEXT_PRIMARY};
-                border: 1.5px solid {COLOR_BORDER_STRONG}; border-radius: {CORNER_RADIUS}px;
-                padding: 0 10px; font-size: 13px;
-            }}
-            QDateEdit:focus {{ border-color: {COLOR_ACCENT}; }}
-            """
-        )
-        return edit
-
-    @staticmethod
-    def _styled_spin(minimum: int, maximum: int, value: int) -> QSpinBox:
-        spin = QSpinBox()
-        spin.setRange(minimum, maximum)
-        spin.setValue(value)
-        spin.setFixedHeight(CONTROL_HEIGHT)
-        spin.setStyleSheet(
-            f"""
-            QSpinBox {{
-                background-color: white; color: {COLOR_TEXT_PRIMARY};
-                border: 1.5px solid {COLOR_BORDER_STRONG}; border-radius: {CORNER_RADIUS}px;
-                padding: 0 8px; font-size: 13px;
-            }}
-            QSpinBox:focus {{ border-color: {COLOR_ACCENT}; }}
-            """
-        )
-        return spin
-
-    @staticmethod
-    def _styled_combo(items: List[str]) -> QComboBox:
-        combo = QComboBox()
-        combo.addItems(items)
-        combo.setFixedHeight(CONTROL_HEIGHT)
-        combo.setStyleSheet(
-            f"""
-            QComboBox {{
-                background-color: white; color: {COLOR_TEXT_PRIMARY};
-                border: 1.5px solid {COLOR_BORDER_STRONG}; border-radius: {CORNER_RADIUS}px;
-                padding: 0 10px; font-size: 13px;
-            }}
-            QComboBox:focus {{ border-color: {COLOR_ACCENT}; }}
-            """
-        )
-        return combo
-
-    @staticmethod
-    def _styled_line_edit(placeholder: str = "") -> QLineEdit:
-        edit = QLineEdit()
-        edit.setPlaceholderText(placeholder)
-        edit.setFixedHeight(CONTROL_HEIGHT)
-        edit.setStyleSheet(
-            f"""
-            QLineEdit {{
-                background-color: white; color: {COLOR_TEXT_PRIMARY};
-                border: 1.5px solid {COLOR_BORDER_STRONG}; border-radius: {CORNER_RADIUS}px;
-                padding: 0 10px; font-size: 13px;
-            }}
-            QLineEdit:focus {{ border-color: {COLOR_ACCENT}; }}
-            """
-        )
-        return edit
 
     def set_profile(self, profile: Optional[dict]) -> None:
         self._profile = profile
@@ -841,48 +1400,49 @@ class _RenameFormPage(QWidget):
         )
 
         if profile["type"] == "van_hanh":
-            self._date_edit = self._styled_date_edit()
-            self._date_edit.dateChanged.connect(self._emit_changed)
-            self.form_layout.addRow("Ngày bắt đầu", self._date_edit)
+            self._split_date = _SplitDateInput()
+            self._split_date.date_changed.connect(self._emit_changed)
+            self.fields_layout.addWidget(self._split_date)
 
             if profile.get("has_ca"):
                 ca_count = profile.get("ca_count", _DEFAULT_CA_COUNT)
-                self._ca_combo = self._styled_combo([f"K{i}" for i in range(1, ca_count + 1)])
+                self._ca_combo = _styled_combo([f"K{i}" for i in range(1, ca_count + 1)])
                 self._ca_combo.currentIndexChanged.connect(self._emit_changed)
-                self.form_layout.addRow("Ca bắt đầu", self._ca_combo)
+                self.fields_layout.addWidget(_LabeledFieldRow("Ca bắt đầu", self._ca_combo))
+
+            # Hiển thị lại "Thành phần cố định" đã cấu hình sẵn ở hồ sơ (chỉ để
+            # xem, không sửa được ở đây) — đúng theo ảnh giao diện cũ đại ca gửi.
+            fixed_text_display = _styled_line_edit()
+            fixed_text_display.setText(profile.get("fixed_text", ""))
+            fixed_text_display.setReadOnly(True)
+            self.fields_layout.addWidget(_LabeledFieldRow("Thành phần cố định", fixed_text_display))
         else:
             for block in profile.get("blocks", []):
                 btype = block.get("type")
                 cfg = block.get("config", {})
                 if btype == "auto_number":
-                    row = QHBoxLayout()
-                    self._auto_number_spin = self._styled_spin(0, 999999, cfg.get("start", 1))
-                    self._auto_step_spin = self._styled_spin(1, 999, cfg.get("step", 1))
+                    self._auto_number_spin = _styled_spin(0, 999999, cfg.get("start", 1))
+                    self._auto_step_spin = _styled_spin(1, 999, cfg.get("step", 1))
                     self._auto_number_spin.valueChanged.connect(self._emit_changed)
                     self._auto_step_spin.valueChanged.connect(self._emit_changed)
-                    row.addWidget(QLabel("Bắt đầu"))
-                    row.addWidget(self._auto_number_spin)
-                    row.addWidget(QLabel("Bước nhảy"))
-                    row.addWidget(self._auto_step_spin)
-                    wrap = QWidget()
-                    wrap.setLayout(row)
-                    self.form_layout.addRow("Số thứ tự tự tăng", wrap)
+                    self.fields_layout.addWidget(_LabeledFieldRow("Số thứ tự bắt đầu", self._auto_number_spin))
+                    self.fields_layout.addWidget(_LabeledFieldRow("Bước nhảy", self._auto_step_spin))
                 elif btype == "date":
-                    self._date_edit = self._styled_date_edit()
-                    self._date_edit.dateChanged.connect(self._emit_changed)
-                    self.form_layout.addRow("Ngày bắt đầu", self._date_edit)
+                    self._split_date = _SplitDateInput()
+                    self._split_date.date_changed.connect(self._emit_changed)
+                    self.fields_layout.addWidget(self._split_date)
                 elif btype == "manual":
-                    self._manual_sample_edit = self._styled_line_edit("VD: giá trị mẫu cho file đầu tiên")
+                    self._manual_sample_edit = _styled_line_edit("VD: giá trị mẫu cho file đầu tiên")
                     self._manual_sample_edit.textChanged.connect(self._emit_changed)
-                    self.form_layout.addRow("Nhập tay (mẫu xem trước)", self._manual_sample_edit)
-                # "fixed_text": không cần trường trong form (đã cấu hình sẵn ở hồ sơ).
+                    self.fields_layout.addWidget(_LabeledFieldRow("Nhập tay (mẫu xem trước)", self._manual_sample_edit))
+                # "fixed_text": không cần trường trong form (đã cấu hình sẵn ở hồ sơ, đúng mục 6.2 CHỐT).
 
         self._emit_changed()
 
     def current_values(self) -> dict:
         values: dict = {}
-        if self._date_edit is not None:
-            values["date"] = self._date_edit.date().toPython()
+        if self._split_date is not None:
+            values["date"] = self._split_date.date()
         if self._ca_combo is not None:
             values["ca_index"] = self._ca_combo.currentIndex() + 1
         if self._auto_number_spin is not None:
@@ -985,7 +1545,7 @@ class _PhatSinhBlockRow(QFrame):
         top_row = QHBoxLayout()
         top_row.setSpacing(8)
 
-        self.type_combo = _RenameFormPage._styled_combo(
+        self.type_combo = _styled_combo(
             [_BLOCK_TYPE_LABELS[t] for t in _BLOCK_TYPE_ORDER]
         )
         self.type_combo.setCurrentIndex(_BLOCK_TYPE_ORDER.index(block["type"]))
@@ -1036,27 +1596,33 @@ class _PhatSinhBlockRow(QFrame):
         cfg = self.block.setdefault("config", {})
 
         if btype == "fixed_text":
-            edit = _RenameFormPage._styled_line_edit("Nội dung cố định, VD: QT.VHTB-STDVH-TX")
+            edit = _styled_line_edit("Nội dung cố định, VD: QT.VHTB-STDVH-TX")
             edit.setText(cfg.get("value", ""))
             edit.textChanged.connect(lambda text: self._update_config("value", text))
-            self.config_layout.addWidget(QLabel("Nội dung:"))
+            content_label = QLabel("Nội dung:")
+            content_label.setStyleSheet(f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; background: transparent;")
+            self.config_layout.addWidget(content_label)
             self.config_layout.addWidget(edit, 1)
 
         elif btype == "auto_number":
-            start_spin = _RenameFormPage._styled_spin(0, 999999, cfg.get("start", 1))
+            start_spin = _styled_spin(0, 999999, cfg.get("start", 1))
             start_spin.valueChanged.connect(lambda v: self._update_config("start", v))
-            step_spin = _RenameFormPage._styled_spin(1, 999, cfg.get("step", 1))
+            step_spin = _styled_spin(1, 999, cfg.get("step", 1))
             step_spin.valueChanged.connect(lambda v: self._update_config("step", v))
-            self.config_layout.addWidget(QLabel("Bắt đầu:"))
+            start_label = QLabel("Bắt đầu:")
+            start_label.setStyleSheet(f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; background: transparent;")
+            step_label = QLabel("Bước nhảy:")
+            step_label.setStyleSheet(f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; background: transparent;")
+            self.config_layout.addWidget(start_label)
             self.config_layout.addWidget(start_spin)
-            self.config_layout.addWidget(QLabel("Bước nhảy:"))
+            self.config_layout.addWidget(step_label)
             self.config_layout.addWidget(step_spin)
             self.config_layout.addStretch()
 
         elif btype == "date":
             checkbox = QCheckBox("Tăng dần mỗi file")
             checkbox.setChecked(cfg.get("increment_daily", False))
-            checkbox.setStyleSheet(f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px;")
+            checkbox.setStyleSheet(_checkbox_qss())
             checkbox.toggled.connect(lambda checked: self._update_config("increment_daily", checked))
             self.config_layout.addWidget(checkbox)
             self.config_layout.addStretch()
@@ -1108,14 +1674,14 @@ class _ProfileFormDialog(QDialog):
         root.setSpacing(14)
 
         name_label = QLabel("Tên hồ sơ")
-        name_label.setStyleSheet("font-size: 13px; font-weight: 700; background: transparent;")
+        name_label.setStyleSheet(f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; font-weight: 700; background: transparent;")
         root.addWidget(name_label)
-        self.name_edit = _RenameFormPage._styled_line_edit("VD: TX, RX, Báo cáo sự cố...")
+        self.name_edit = _styled_line_edit("VD: TX, RX, Báo cáo sự cố...")
         self.name_edit.textChanged.connect(self._revalidate)
         root.addWidget(self.name_edit)
 
         type_label = QLabel("Loại biểu mẫu")
-        type_label.setStyleSheet("font-size: 13px; font-weight: 700; background: transparent;")
+        type_label.setStyleSheet(f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; font-weight: 700; background: transparent;")
         root.addWidget(type_label)
         self.type_toggle = _SegmentedToggle([("van_hanh", "Vận hành"), ("phat_sinh", "Phát sinh")])
         self.type_toggle.value_changed.connect(self._on_type_changed)
@@ -1128,13 +1694,15 @@ class _ProfileFormDialog(QDialog):
         vh_layout.setSpacing(10)
 
         self.has_ca_checkbox = QCheckBox("Có ca trực")
-        self.has_ca_checkbox.setStyleSheet(f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; font-weight: 600;")
+        self.has_ca_checkbox.setStyleSheet(_checkbox_qss())
         self.has_ca_checkbox.toggled.connect(self._on_has_ca_toggled)
         vh_layout.addWidget(self.has_ca_checkbox)
 
         ca_row = QHBoxLayout()
-        ca_row.addWidget(QLabel("Số ca trong ngày"))
-        self.ca_count_spin = _RenameFormPage._styled_spin(_MIN_CA_COUNT, _MAX_CA_COUNT, _DEFAULT_CA_COUNT)
+        ca_count_label = QLabel("Số ca trong ngày")
+        ca_count_label.setStyleSheet(f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; background: transparent;")
+        ca_row.addWidget(ca_count_label)
+        self.ca_count_spin = _styled_spin(_MIN_CA_COUNT, _MAX_CA_COUNT, _DEFAULT_CA_COUNT)
         self.ca_count_spin.valueChanged.connect(self._update_preview)
         ca_row.addWidget(self.ca_count_spin)
         ca_row.addStretch()
@@ -1143,8 +1711,10 @@ class _ProfileFormDialog(QDialog):
         self.ca_row_widget.setVisible(False)
         vh_layout.addWidget(self.ca_row_widget)
 
-        vh_layout.addWidget(QLabel("Văn bản cố định"))
-        self.fixed_text_edit = _RenameFormPage._styled_line_edit("VD: QT.VHTB-STDVH-TX")
+        fixed_text_label = QLabel("Văn bản cố định")
+        fixed_text_label.setStyleSheet(f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; font-weight: 700; background: transparent;")
+        vh_layout.addWidget(fixed_text_label)
+        self.fixed_text_edit = _styled_line_edit("VD: QT.VHTB-STDVH-TX")
         self.fixed_text_edit.textChanged.connect(self._update_preview)
         vh_layout.addWidget(self.fixed_text_edit)
 
@@ -1178,21 +1748,22 @@ class _ProfileFormDialog(QDialog):
 
         root.addWidget(self.phat_sinh_page)
 
-        # ---- Dòng preview mẫu (CHỐT, bắt buộc — mục 5.1) ----
+        # ---- Dòng preview mẫu (CHỐT, bắt buộc — mục 5.1) — KHÔNG dùng viền
+        # cam (đã bỏ theo yêu cầu), chỉ tô nền xám nhạt. ----
         preview_box = QFrame()
         preview_box.setStyleSheet(
-            f"QFrame {{ background-color: {COLOR_ACCENT_LIGHT}; border: 1px solid {COLOR_ACCENT}; border-radius: 10px; }}"
+            f"QFrame {{ background-color: {_PILL_BG}; border: none; border-radius: 10px; }}"
         )
         preview_box_layout = QVBoxLayout(preview_box)
         preview_box_layout.setContentsMargins(14, 8, 14, 8)
         preview_box_layout.setSpacing(2)
         hint = QLabel("Mẫu tên file")
-        hint.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY}; font-size: 11px; background: transparent;")
+        hint.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY}; font-size: 11px; background: transparent; border: none;")
         preview_box_layout.addWidget(hint)
         self.preview_label = QLabel("—")
         self.preview_label.setWordWrap(True)
         self.preview_label.setStyleSheet(
-            f"color: {COLOR_TEXT_PRIMARY}; font-size: 14px; font-weight: 700; background: transparent;"
+            f"color: {COLOR_TEXT_PRIMARY}; font-size: 14px; font-weight: 700; background: transparent; border: none;"
         )
         preview_box_layout.addWidget(self.preview_label)
         root.addWidget(preview_box)
@@ -1369,7 +1940,7 @@ class _ConfirmDeleteProfileDialog(QDialog):
 
         message = QLabel(f"Xóa hồ sơ mẫu '{profile_name}'? Không thể hoàn tác.")
         message.setWordWrap(True)
-        message.setStyleSheet("font-size: 13px; background: transparent;")
+        message.setStyleSheet(f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; background: transparent;")
         layout.addWidget(message)
 
         button_row = QHBoxLayout()
@@ -1585,8 +2156,10 @@ class _RenamePreviewDialog(QDialog):
 
         # ---- Chọn thư mục lưu (theo quy ước chung mục 0 — không ghi đè gốc) ----
         dir_row = QHBoxLayout()
-        dir_row.addWidget(QLabel("Thư mục lưu kết quả"))
-        self.dir_edit = _RenameFormPage._styled_line_edit("Chưa chọn thư mục...")
+        dir_label = QLabel("Thư mục lưu kết quả")
+        dir_label.setStyleSheet(f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; font-weight: 700; background: transparent;")
+        dir_row.addWidget(dir_label)
+        self.dir_edit = _styled_line_edit("Chưa chọn thư mục...")
         self.dir_edit.setReadOnly(True)
         dir_row.addWidget(self.dir_edit, 1)
         browse_btn = QPushButton("Duyệt...")
@@ -1650,7 +2223,7 @@ class _RenamePreviewDialog(QDialog):
             self.table.setItem(row_index, 0, self._readonly_item(current_name))
             col = 1
             if self._has_manual_block:
-                manual_edit = _RenameFormPage._styled_line_edit("Nhập giá trị cho file này")
+                manual_edit = _styled_line_edit("Nhập giá trị cho file này")
                 manual_edit.setText(self._manual_edits.get(row_index, values.get("manual_sample", "")))
                 manual_edit.textChanged.connect(
                     lambda text, i=row_index: self._on_manual_edit_changed(i, text)
@@ -1888,6 +2461,7 @@ class RenameFeatureWidget(QWidget):
 
         self.stack = QStackedWidget()
         self.preview_page = _PreviewPage()
+        self.preview_page.render_error.connect(self._show_error)
         self.form_page = _RenameFormPage()
         self.form_page.values_changed.connect(self._on_form_values_changed)
         self.stack.addWidget(self.preview_page)
@@ -1939,6 +2513,17 @@ class RenameFeatureWidget(QWidget):
             f"QMenu::item:selected {{ background-color: {_PILL_BG}; color: {COLOR_TEXT_PRIMARY}; }}"
             f"QMenu::separator {{ height: 1px; background: {COLOR_BORDER}; margin: 4px 8px; }}"
         )
+
+        # Chỉ hiện khi đang áp dụng 1 hồ sơ (Cột A đang khóa) — cho phép người
+        # dùng mở khóa lại danh sách file mà KHÔNG mất file đã chọn (khác Clear,
+        # vốn xóa sạch toàn bộ danh sách).
+        if self._selected_profile_id is not None:
+            menu.addAction(
+                qta.icon("mdi6.arrow-left", color=COLOR_TEXT_PRIMARY), "Quay lại chọn file",
+                self._on_back_to_file_selection,
+            )
+            menu.addSeparator()
+
         for profile in self._profiles:
             label = f"{profile['name']}  ({_profile_type_label(profile['type'])})"
             menu.addAction(label, lambda p=profile: self._apply_profile(p))
@@ -1985,6 +2570,22 @@ class RenameFeatureWidget(QWidget):
         self.stack.setCurrentWidget(self.form_page)
         self._update_rename_button_state()
         self._hide_result()
+        self._rebuild_create_profile_menu()
+
+    def _on_back_to_file_selection(self) -> None:
+        """Mở khóa lại Cột A để chỉnh sửa danh sách file, GIỮ NGUYÊN các file
+        đã chọn (khác "Clear" — xóa sạch toàn bộ danh sách)."""
+        self._selected_profile_id = None
+        self._set_locked(False)
+        self.form_page.set_profile(None)
+        self.stack.setCurrentWidget(self.preview_page)
+        if self._selected_row is not None:
+            self.preview_page.show_file(self._selected_row.path)
+        else:
+            self._select_first_available()
+        self._update_rename_button_state()
+        self._hide_result()
+        self._rebuild_create_profile_menu()
 
     # ------------------------------------------------------------------
     # Khóa/mở khóa Cột A
@@ -2136,6 +2737,7 @@ class RenameFeatureWidget(QWidget):
         self._update_header_count()
         self._hide_result()
         self._update_rename_button_state()
+        self._rebuild_create_profile_menu()
 
     def _select_row(self, row: _FileRow) -> None:
         if self._selected_row is not None:

@@ -1267,7 +1267,7 @@ class _LabeledFieldRow(QWidget):
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        layout.setSpacing(14)
 
         badge = QLabel(label_text)
         badge.setFixedHeight(CONTROL_HEIGHT)
@@ -1337,7 +1337,7 @@ class _RenameFormPage(QWidget):
 
         self.root_layout = QVBoxLayout(self)
         self.root_layout.setContentsMargins(0, 0, 0, 0)
-        self.root_layout.setSpacing(14)
+        self.root_layout.setSpacing(18)
         self.root_layout.setAlignment(Qt.AlignTop)
 
         self.profile_title = QLabel("")
@@ -1348,7 +1348,7 @@ class _RenameFormPage(QWidget):
         self.root_layout.addWidget(self.profile_title)
 
         self.fields_layout = QVBoxLayout()
-        self.fields_layout.setSpacing(10)
+        self.fields_layout.setSpacing(16)
         self.root_layout.addLayout(self.fields_layout)
 
         self.root_layout.addStretch()
@@ -2344,13 +2344,22 @@ class RenameFeatureWidget(QWidget):
         list_card_layout.setContentsMargins(18, 14, 18, 10)
         list_card_layout.setSpacing(8)
 
-        list_header = QHBoxLayout()
+        # Hàng tiêu đề đặt trong 1 container cao CỐ ĐỊNH — không phụ thuộc nội
+        # dung bên dưới rỗng hay có file, để không bao giờ bị đẩy lệch vị trí
+        # (đúng nguyên tắc "khung tiêu đề cố định" ở 01_dac_ta_giao_dien.md mục 3).
+        list_header_container = QWidget()
+        list_header_container.setFixedHeight(26)
+        list_header = QHBoxLayout(list_header_container)
+        list_header.setContentsMargins(0, 0, 0, 0)
+        list_header.setSpacing(8)
+
         list_icon = QLabel()
         list_icon.setPixmap(qta.icon("mdi6.format-list-bulleted", color=COLOR_TEXT_PRIMARY).pixmap(QSize(18, 18)))
         list_icon.setStyleSheet("background: transparent; border: none;")
         list_header.addWidget(list_icon)
 
         self.list_count_label = QLabel("Danh sách file (0)")
+        self.list_count_label.setFixedHeight(20)
         self.list_count_label.setStyleSheet(
             f"color: {COLOR_TEXT_PRIMARY}; font-size: 14px; font-weight: 700; background: transparent; border: none;"
         )
@@ -2358,6 +2367,7 @@ class RenameFeatureWidget(QWidget):
         list_header.addStretch()
 
         self.lock_badge = QLabel(" Đã khóa")
+        self.lock_badge.setFixedHeight(22)
         self.lock_badge.setStyleSheet(
             f"background-color: {_PILL_BG}; color: {COLOR_TEXT_SECONDARY}; font-size: 11px; "
             "font-weight: 700; border-radius: 8px; padding: 3px 8px;"
@@ -2365,19 +2375,31 @@ class RenameFeatureWidget(QWidget):
         self.lock_badge.hide()
         list_header.addWidget(self.lock_badge)
 
-        list_card_layout.addLayout(list_header)
+        list_card_layout.addWidget(list_header_container)
 
+        # Thân danh sách: QStackedWidget 2 trang (rỗng / có file) — đúng khuyến
+        # nghị 01_dac_ta_giao_dien.md mục 3, thay cho ẩn/hiện bằng setVisible()
+        # (cách cũ khiến hàng tiêu đề bị kéo giãn lệch vị trí khi danh sách rỗng).
+        self.list_body_stack = QStackedWidget()
+
+        empty_page = QWidget()
+        empty_page_layout = QVBoxLayout(empty_page)
+        empty_page_layout.setContentsMargins(0, 0, 0, 0)
+        empty_page_layout.setAlignment(Qt.AlignCenter)
         self.empty_hint = QLabel("Chưa có file nào — hãy chọn hoặc kéo-thả file PDF phía trên để bắt đầu.")
         self.empty_hint.setAlignment(Qt.AlignCenter)
         self.empty_hint.setWordWrap(True)
         self.empty_hint.setStyleSheet(
             f"color: {COLOR_TEXT_SECONDARY}; font-size: 13px; padding: 28px 12px; background: transparent; border: none;"
         )
-        list_card_layout.addWidget(self.empty_hint)
+        empty_page_layout.addWidget(self.empty_hint)
+        self.list_body_stack.addWidget(empty_page)
 
         self.file_list = _DraggableFileList()
         self.file_list.row_drag_dropped.connect(self._on_row_drag_dropped)
-        list_card_layout.addWidget(self.file_list, 1)
+        self.list_body_stack.addWidget(self.file_list)
+
+        list_card_layout.addWidget(self.list_body_stack, 1)
 
         column_a.addWidget(list_card, 1)
 
@@ -2427,14 +2449,16 @@ class RenameFeatureWidget(QWidget):
         self.rename_button.setCursor(Qt.PointingHandCursor)
         self.rename_button.setFixedHeight(CONTROL_HEIGHT)
         self.rename_button.setMinimumWidth(120)
+        # Luôn nền cam/chữ trắng (không làm mờ/xám khi thiếu điều kiện) — bấm
+        # vào lúc thiếu điều kiện sẽ báo rõ lý do qua result_label thay vì chặn
+        # bằng cách disable nút.
         self.rename_button.setStyleSheet(
             f"""
             QPushButton {{
                 background-color: {COLOR_ACCENT}; color: white; border: none;
                 border-radius: {CORNER_RADIUS}px; font-size: 13px; font-weight: 700; padding: 0 16px;
             }}
-            QPushButton:hover:enabled {{ background-color: #E28104; }}
-            QPushButton:disabled {{ background-color: {COLOR_BORDER_STRONG}; color: {COLOR_TEXT_SECONDARY}; }}
+            QPushButton:hover {{ background-color: #E28104; }}
             """
         )
         self.rename_button.clicked.connect(self._on_rename_clicked)
@@ -2456,10 +2480,16 @@ class RenameFeatureWidget(QWidget):
             f"QFrame {{ background-color: white; border: 1.5px solid {COLOR_BORDER}; border-radius: 14px; }}"
         )
         content_card_layout = QVBoxLayout(content_card)
-        content_card_layout.setContentsMargins(18, 16, 18, 16)
-        content_card_layout.setSpacing(10)
+        content_card_layout.setContentsMargins(18, 14, 18, 16)
+        content_card_layout.setSpacing(12)
 
         self.stack = QStackedWidget()
+        self.stack.setStyleSheet("""
+            QStackedWidget {
+                background: transparent;
+                border: none;
+            }
+        """)
         self.preview_page = _PreviewPage()
         self.preview_page.render_error.connect(self._show_error)
         self.form_page = _RenameFormPage()
@@ -2686,8 +2716,7 @@ class RenameFeatureWidget(QWidget):
     def _update_header_count(self) -> None:
         count = self.file_list.count()
         self.list_count_label.setText(f"Danh sách file ({count})")
-        self.file_list.setVisible(count > 0)
-        self.empty_hint.setVisible(count == 0)
+        self.list_body_stack.setCurrentIndex(1 if count > 0 else 0)
 
     # ------------------------------------------------------------------
     # Sự kiện
@@ -2762,13 +2791,18 @@ class RenameFeatureWidget(QWidget):
         self._update_rename_button_state()
 
     def _update_rename_button_state(self) -> None:
-        has_files = self.file_list.count() > 0
-        has_profile = self._selected_profile_id is not None and self.form_page.is_valid()
-        self.rename_button.setEnabled(has_files and has_profile)
+        # Nút "Đổi tên" luôn giữ nền cam/chữ trắng (không disable) — điều kiện
+        # thiếu sót sẽ được báo cụ thể ngay khi bấm, xem _on_rename_clicked.
+        self.rename_button.setEnabled(True)
 
     def _on_rename_clicked(self) -> None:
+        if self.file_list.count() == 0:
+            self._show_error("Hãy chọn file để bắt đầu")
+            return
+
         profile = next((p for p in self._profiles if p["id"] == self._selected_profile_id), None)
-        if profile is None or self.file_list.count() == 0:
+        if profile is None or not self.form_page.is_valid():
+            self._show_error("Vui lòng chọn biểu mẫu tên hoặc tạo mới")
             return
 
         files: List[Tuple[str, str]] = []

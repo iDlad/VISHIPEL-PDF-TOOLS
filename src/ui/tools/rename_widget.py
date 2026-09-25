@@ -169,6 +169,17 @@ def _format_file_size(num_bytes: int) -> str:
     return f"{max(1, round(num_bytes / 1024))} KB"
 
 
+def _parse_size_to_mb(size_text: str) -> float:
+    """Đổi ngược chuỗi hiển thị dung lượng ("2.4 MB"/"956 KB") ra số MB để so
+    sánh khi Sắp xếp theo Dung lượng — y hệt merge_widget.py."""
+    try:
+        value_str, unit = size_text.strip().split()
+        value = float(value_str)
+        return value / 1024 if unit.upper() == "KB" else value
+    except (ValueError, AttributeError):
+        return 0.0
+
+
 def _new_profile_id() -> str:
     return uuid.uuid4().hex[:8]
 
@@ -2338,7 +2349,7 @@ class RenameFeatureWidget(QWidget):
 
         list_card = QFrame()
         list_card.setStyleSheet(
-            f"QFrame {{ background-color: white; border: 1.5px solid {COLOR_BORDER}; border-radius: 14px; }}"
+            f"QFrame {{ background-color: transparent; border: 1.5px solid {COLOR_BORDER}; border-radius: 14px; }}"
         )
         list_card_layout = QVBoxLayout(list_card)
         list_card_layout.setContentsMargins(18, 14, 18, 10)
@@ -2365,6 +2376,46 @@ class RenameFeatureWidget(QWidget):
         )
         list_header.addWidget(self.list_count_label)
         list_header.addStretch()
+
+        # Nút + menu "Sắp xếp" — bố cục/thiết kế y hệt merge_widget.py (đặt sau
+        # addStretch, trước phần badge trạng thái bên phải). Đặt fixedHeight(22)
+        # (khác merge_widget.py không set) vì header của rename_widget.py dùng
+        # container cao cố định 26px — cần khớp cùng chiều cao với lock_badge
+        # bên cạnh để không bị lệch/tràn khung, không đổi gì về vị trí/kiểu dáng.
+        self.sort_button = QToolButton()
+        self.sort_button.setText(" Sắp xếp")
+        self.sort_button.setIcon(qta.icon("mdi6.sort", color=COLOR_TEXT_PRIMARY))
+        self.sort_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.sort_button.setCursor(Qt.PointingHandCursor)
+        self.sort_button.setPopupMode(QToolButton.InstantPopup)
+        self.sort_button.setFixedHeight(22)
+        self.sort_button.setStyleSheet(
+            f"""
+            QToolButton {{
+                background: transparent;
+                border: none;
+                color: {COLOR_TEXT_PRIMARY};
+                font-size: 13px;
+                font-weight: 600;
+                padding: 4px 8px;
+                border-radius: 6px;
+            }}
+            QToolButton:hover {{ background-color: #F3F4F6; }}
+            QToolButton::menu-indicator {{ image: none; }}
+            """
+        )
+
+        sort_menu = QMenu(self.sort_button)
+        sort_menu.setStyleSheet(
+            f"QMenu {{ background-color: white; color: {COLOR_TEXT_PRIMARY}; border: 1px solid {COLOR_BORDER}; }}"
+            f"QMenu::item:selected {{ background-color: #F3F4F6; color: {COLOR_TEXT_PRIMARY}; }}"
+        )
+        sort_menu.addAction("Tên (A → Z)", lambda: self._sort_files("name"))
+        sort_menu.addAction("Tên (Z → A)", lambda: self._sort_files("name_desc"))
+        sort_menu.addAction("Dung lượng (lớn → nhỏ)", lambda: self._sort_files("size"))
+        sort_menu.addAction("Số trang (nhiều → ít)", lambda: self._sort_files("pages"))
+        self.sort_button.setMenu(sort_menu)
+        list_header.addWidget(self.sort_button)
 
         self.lock_badge = QLabel(" Đã khóa")
         self.lock_badge.setFixedHeight(22)
@@ -2625,6 +2676,7 @@ class RenameFeatureWidget(QWidget):
         self.drop_zone.set_locked(locked)
         self.file_list.set_locked(locked)
         self.lock_badge.setVisible(locked)
+        self.sort_button.setEnabled(not locked)
         for i in range(self.file_list.count()):
             row = self.file_list.itemWidget(self.file_list.item(i))
             if row is not None:
@@ -2717,6 +2769,45 @@ class RenameFeatureWidget(QWidget):
         count = self.file_list.count()
         self.list_count_label.setText(f"Danh sách file ({count})")
         self.list_body_stack.setCurrentIndex(1 if count > 0 else 0)
+
+    def _sort_files(self, key: str) -> None:
+        # Chặn khi Cột A đang khóa (đã chọn hồ sơ mẫu) — đúng bảng 6.1
+        # (08_dac_ta_doi_ten.md): không thêm/xóa/kéo-thả/đổi thứ tự dưới bất kỳ
+        # hình thức nào cho tới khi bấm "Clear". Thứ tự Cột A quyết định thứ tự
+        # sinh Ngày/Ca/Số thứ tự tự tăng nên Sắp xếp cũng phải tuân theo khóa này
+        # (khác merge_widget.py — Gộp file không có khái niệm khóa danh sách).
+        if self._is_locked:
+            return
+
+        rows_data = [
+            (
+                self.file_list.itemWidget(self.file_list.item(i)).path,
+                self.file_list.itemWidget(self.file_list.item(i)).name,
+                self.file_list.itemWidget(self.file_list.item(i)).size_text,
+                self.file_list.itemWidget(self.file_list.item(i)).pages,
+            )
+            for i in range(self.file_list.count())
+        ]
+        if key == "name":
+            rows_data.sort(key=lambda r: r[1].lower())
+        elif key == "name_desc":
+            rows_data.sort(key=lambda r: r[1].lower(), reverse=True)
+        elif key == "size":
+            rows_data.sort(key=lambda r: _parse_size_to_mb(r[2]), reverse=True)
+        elif key == "pages":
+            rows_data.sort(key=lambda r: r[3], reverse=True)
+
+        # Dùng path (không dùng name) để chọn lại đúng file sau khi sắp xếp —
+        # tránh nhầm khi 2 file trùng tên nhưng khác thư mục nguồn.
+        selected_path = self._selected_row.path if self._selected_row else None
+        self.file_list.clear()
+        self._selected_row = None
+        for path, name, size_text, pages in rows_data:
+            new_row = self._add_file_row(path, name, size_text, pages)
+            if path == selected_path:
+                self._select_row(new_row)
+        if self._selected_row is None:
+            self._select_first_available()
 
     # ------------------------------------------------------------------
     # Sự kiện

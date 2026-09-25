@@ -38,8 +38,8 @@ import uuid
 from typing import Dict, List, Optional, Tuple
 
 import qtawesome as qta
-from PySide6.QtCore import Qt, Signal, QSize, QPoint, QThread
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPixmap
+from PySide6.QtCore import Qt, Signal, QSize, QPoint, QThread, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPixmap, QDesktopServices
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -90,6 +90,22 @@ from src.pdf_core import (
     get_page_count,
     list_page_infos,
     PageRenderer,
+)
+
+# Lõi đổi tên thật (mới nối logic) — thuần logic, không phụ thuộc PySide6, xem
+# src/rename_engine.py. Đặt bí danh generate_name -> _preview_generate_name và
+# compute_row_values -> _compute_row_progression để GIỮ NGUYÊN toàn bộ các chỗ
+# gọi hàm đã có sẵn trong UI (đúng docstring đầu file: "thay _preview_generate_name
+# bằng lời gọi rename_engine.py thật, giữ nguyên phần UI").
+from src.rename_engine import (
+    ProfileStoreError,
+    load_profiles,
+    save_profiles,
+    generate_name as _preview_generate_name,
+    compute_row_values as _compute_row_progression,
+    apply_rename_batch,
+    ConflictAction,
+    RenameBatchResult,
 )
 
 # ----------------------------------------------------------------------
@@ -199,43 +215,6 @@ def _profile_type_label(profile_type: str) -> str:
     return "Vận hành" if profile_type == "van_hanh" else "Phát sinh"
 
 
-def _preview_generate_name(profile: dict, values: dict, batch_size: int = 1) -> str:
-    """TẠM THỜI — placeholder chỉ để có chữ hiển thị lên dòng preview/bảng xem
-    trước trong lúc xây giao diện. KHÔNG phải thuật toán chính thức của
-    rename_engine.py (file đó chưa tồn tại). Khi nối logic thật, thay hàm này
-    bằng lời gọi rename_engine tương ứng, giữ nguyên phần UI gọi nó."""
-    ext = ".pdf"
-    if profile.get("type") == "van_hanh":
-        date_value: datetime.date = values.get("date") or datetime.date.today()
-        parts = [date_value.strftime("%d%m%Y")]
-        if profile.get("has_ca"):
-            ca_index = values.get("ca_index", 1)
-            parts.append(f"K{ca_index}")
-        fixed_text = (profile.get("fixed_text") or "").strip()
-        if fixed_text:
-            parts.append(fixed_text)
-        return "_".join(parts) + ext
-
-    segments: List[str] = []
-    pad_width = max(2, len(str(max(1, batch_size))))
-    for block in profile.get("blocks", []):
-        btype = block.get("type")
-        cfg = block.get("config", {})
-        if btype == "fixed_text":
-            value = (cfg.get("value") or "").strip()
-            if value:
-                segments.append(value)
-        elif btype == "auto_number":
-            start = values.get("auto_number_start", cfg.get("start", 1))
-            segments.append(str(start).zfill(pad_width))
-        elif btype == "date":
-            date_value = values.get("date") or datetime.date.today()
-            segments.append(date_value.strftime("%d%m%Y"))
-        elif btype == "manual":
-            segments.append(values.get("manual_sample") or "TenNhapTay")
-    return ("_".join(segments) if segments else "ten_file") + ext
-
-
 def _zoom_button_style() -> str:
     """Style cho 2 nút Zoom In/Out ở header Cột B — đồng bộ với merge_widget.py."""
     return f"""
@@ -285,6 +264,32 @@ def _checkbox_qss() -> str:
             border-color: {COLOR_ACCENT};
         }}
     """
+
+
+def _outline_button_style() -> str:
+    """Style nút phụ (viền xám, nền trắng) — dùng cho các nút Hủy/Quay lại/Đổi
+    tên khác trong dialog xử lý trùng tên (_RenameConflictDialog)."""
+    return f"""
+        QPushButton {{
+            background-color: white; color: {COLOR_TEXT_PRIMARY};
+            border: 1.5px solid {COLOR_BORDER_STRONG}; border-radius: {CORNER_RADIUS}px;
+            font-size: 13px; font-weight: 700; padding: 0 16px;
+        }}
+        QPushButton:hover {{ background-color: {_PILL_BG}; }}
+        """
+
+
+def _accent_button_style() -> str:
+    """Style nút chính (nền cam Accent) — dùng cho nút hành động chính trong
+    dialog xử lý trùng tên (_RenameConflictDialog)."""
+    return f"""
+        QPushButton {{
+            background-color: {COLOR_ACCENT}; color: white; border: none;
+            border-radius: {CORNER_RADIUS}px; font-size: 13px; font-weight: 700; padding: 0 16px;
+        }}
+        QPushButton:hover {{ background-color: #E28104; }}
+        QPushButton:disabled {{ background-color: {COLOR_BORDER_STRONG}; }}
+        """
 
 
 def _styled_spin(minimum: int, maximum: int, value: int) -> QSpinBox:
@@ -2101,6 +2106,145 @@ class _ManageProfilesDialog(QDialog):
 
 
 # ----------------------------------------------------------------------
+# Dialog xử lý trùng tên khi Đổi tên hàng loạt (02_dac_ta_tinh_nang.md mục 8):
+# Ghi đè / Đổi tên khác / Hủy. Tự vẽ nền trắng/chữ tối/nút Accent, đồng bộ
+# style chung của app (01_dac_ta_giao_dien.md mục 3).
+# ----------------------------------------------------------------------
+class _RenameConflictDialog(QDialog):
+    """1 dialog, 2 trang (QWidget con ẩn/hiện, không dùng QStackedWidget vì
+    dialog nhỏ, không cần giữ kích thước cố định giữa 2 trang):
+
+    - Trang 1 (mặc định): thông báo trùng tên + 3 nút Hủy / Đổi tên khác /
+      Ghi đè. Khi `disallow_overwrite=True` (tên mới trùng ĐÚNG file gốc đang
+      đổi tên) — ẩn hẳn nút Ghi đè để không bao giờ phá hủy file gốc, đúng quy
+      ước chung 02_dac_ta_tinh_nang.md mục 0.
+    - Trang 2: ô nhập tên khác, gợi ý sẵn `<tên>_2.pdf`.
+
+    Kết quả đọc qua 2 thuộc tính sau khi `exec()` xong: `self.action`
+    (ConflictAction.OVERWRITE/RENAME/CANCEL) và `self.new_name` (chỉ có giá
+    trị khi action = RENAME)."""
+
+    def __init__(self, current_name: str, disallow_overwrite: bool, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Trùng tên file")
+        self.setMinimumWidth(420)
+        self.setStyleSheet(f"QDialog {{ background-color: white; }} QLabel {{ color: {COLOR_TEXT_PRIMARY}; }}")
+
+        self.action: str = ConflictAction.CANCEL
+        self.new_name: Optional[str] = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 16)
+        layout.setSpacing(14)
+
+        if disallow_overwrite:
+            message_text = (
+                f'Tên file mới "{current_name}" trùng với chính file gốc đang đổi tên trong '
+                "thư mục đích — không thể ghi đè lên file gốc. Vui lòng đổi tên khác hoặc "
+                "chọn thư mục lưu khác rồi thử lại."
+            )
+        else:
+            message_text = f'File "{current_name}" đã tồn tại trong thư mục đích. Bạn muốn:'
+        message = QLabel(message_text)
+        message.setWordWrap(True)
+        message.setStyleSheet(f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; background: transparent;")
+        layout.addWidget(message)
+
+        # ---- Trang 1: 3 lựa chọn ----
+        self.choice_page = QWidget()
+        choice_layout = QHBoxLayout(self.choice_page)
+        choice_layout.setContentsMargins(0, 0, 0, 0)
+        choice_layout.setSpacing(8)
+        choice_layout.addStretch()
+
+        cancel_btn = QPushButton("Hủy")
+        cancel_btn.setCursor(Qt.PointingHandCursor)
+        cancel_btn.setFixedHeight(CONTROL_HEIGHT)
+        cancel_btn.setStyleSheet(_outline_button_style())
+        cancel_btn.clicked.connect(self._on_cancel)
+        choice_layout.addWidget(cancel_btn)
+
+        rename_btn = QPushButton("Đổi tên khác")
+        rename_btn.setCursor(Qt.PointingHandCursor)
+        rename_btn.setFixedHeight(CONTROL_HEIGHT)
+        rename_btn.setStyleSheet(_outline_button_style())
+        rename_btn.clicked.connect(self._show_rename_page)
+        choice_layout.addWidget(rename_btn)
+
+        if not disallow_overwrite:
+            overwrite_btn = QPushButton("Ghi đè")
+            overwrite_btn.setCursor(Qt.PointingHandCursor)
+            overwrite_btn.setFixedHeight(CONTROL_HEIGHT)
+            overwrite_btn.setStyleSheet(_accent_button_style())
+            overwrite_btn.clicked.connect(self._on_overwrite)
+            choice_layout.addWidget(overwrite_btn)
+
+        layout.addWidget(self.choice_page)
+
+        # ---- Trang 2: nhập tên khác (ẩn ban đầu) ----
+        self.rename_page = QWidget()
+        rename_layout = QVBoxLayout(self.rename_page)
+        rename_layout.setContentsMargins(0, 0, 0, 0)
+        rename_layout.setSpacing(10)
+
+        self.name_edit = _styled_line_edit()
+        base, ext = os.path.splitext(current_name)
+        self.name_edit.setText(f"{base}_2{ext or '.pdf'}")
+        self.name_edit.textChanged.connect(self._revalidate_name)
+        rename_layout.addWidget(self.name_edit)
+
+        rename_btn_row = QHBoxLayout()
+        rename_btn_row.addStretch()
+        back_btn = QPushButton("Quay lại")
+        back_btn.setCursor(Qt.PointingHandCursor)
+        back_btn.setFixedHeight(CONTROL_HEIGHT)
+        back_btn.setStyleSheet(_outline_button_style())
+        back_btn.clicked.connect(self._show_choice_page)
+        rename_btn_row.addWidget(back_btn)
+
+        self.confirm_rename_btn = QPushButton("Xác nhận tên mới")
+        self.confirm_rename_btn.setCursor(Qt.PointingHandCursor)
+        self.confirm_rename_btn.setFixedHeight(CONTROL_HEIGHT)
+        self.confirm_rename_btn.setStyleSheet(_accent_button_style())
+        self.confirm_rename_btn.clicked.connect(self._on_confirm_rename)
+        rename_btn_row.addWidget(self.confirm_rename_btn)
+        rename_layout.addLayout(rename_btn_row)
+
+        self.rename_page.setVisible(False)
+        layout.addWidget(self.rename_page)
+
+    def _show_rename_page(self) -> None:
+        self.choice_page.setVisible(False)
+        self.rename_page.setVisible(True)
+        self._revalidate_name()
+
+    def _show_choice_page(self) -> None:
+        self.rename_page.setVisible(False)
+        self.choice_page.setVisible(True)
+
+    def _revalidate_name(self, *args) -> None:
+        self.confirm_rename_btn.setEnabled(bool(self.name_edit.text().strip()))
+
+    def _on_overwrite(self) -> None:
+        self.action = ConflictAction.OVERWRITE
+        self.accept()
+
+    def _on_confirm_rename(self) -> None:
+        text = self.name_edit.text().strip()
+        if not text:
+            return
+        if not text.lower().endswith(".pdf"):
+            text += ".pdf"
+        self.action = ConflictAction.RENAME
+        self.new_name = text
+        self.accept()
+
+    def _on_cancel(self) -> None:
+        self.action = ConflictAction.CANCEL
+        self.reject()
+
+
+# ----------------------------------------------------------------------
 # Dialog xem trước Tên cũ → Tên mới trước khi "Đổi tên" thật (mục 0, 6.1)
 # ----------------------------------------------------------------------
 class _RenamePreviewDialog(QDialog):
@@ -2229,7 +2373,7 @@ class _RenamePreviewDialog(QDialog):
         batch_size = len(self.files)
         for row_index, (path, current_name) in enumerate(self.files):
             values = dict(self.base_values)
-            values = self._apply_batch_progression(values, row_index)
+            values = _compute_row_progression(self.profile, values, row_index)
 
             self.table.setItem(row_index, 0, self._readonly_item(current_name))
             col = 1
@@ -2245,35 +2389,9 @@ class _RenamePreviewDialog(QDialog):
             new_name = _preview_generate_name(self.profile, values, batch_size=batch_size)
             self.table.setItem(row_index, col, self._readonly_item(new_name))
 
-    def _apply_batch_progression(self, values: dict, row_index: int) -> dict:
-        """TẠM THỜI — mô phỏng quy tắc xoay vòng Ngày/Ca (mục 3) và tăng dần Số thứ
-        tự/Ngày (mục 4) chỉ để bảng xem trước có dữ liệu khác nhau từng dòng. Thay
-        bằng rename_engine.py thật khi nối logic."""
-        values = dict(values)
-        if self.profile["type"] == "van_hanh":
-            base_date: datetime.date = values.get("date") or datetime.date.today()
-            if self.profile.get("has_ca"):
-                ca_count = self.profile.get("ca_count", _DEFAULT_CA_COUNT)
-                start_ca = values.get("ca_index", 1)
-                absolute = (start_ca - 1) + row_index
-                values["ca_index"] = (absolute % ca_count) + 1
-                values["date"] = base_date + datetime.timedelta(days=absolute // ca_count)
-            else:
-                values["date"] = base_date + datetime.timedelta(days=row_index)
-        else:
-            start = values.get("auto_number_start")
-            step = values.get("auto_number_step", 1)
-            if start is not None:
-                values["auto_number_start"] = start + row_index * step
-            for block in self.profile.get("blocks", []):
-                if block["type"] == "date" and block.get("config", {}).get("increment_daily"):
-                    base_date = values.get("date") or datetime.date.today()
-                    values["date"] = base_date + datetime.timedelta(days=row_index)
-        return values
-
     def _on_manual_edit_changed(self, row_index: int, text: str) -> None:
         self._manual_edits[row_index] = text
-        values = self._apply_batch_progression(dict(self.base_values), row_index)
+        values = _compute_row_progression(self.profile, dict(self.base_values), row_index)
         values["manual_sample"] = text
         new_name = _preview_generate_name(self.profile, values, batch_size=len(self.files))
         col = 2 if self._has_manual_block else 1
@@ -2291,19 +2409,87 @@ class _RenamePreviewDialog(QDialog):
             self._output_dir = directory
             self.dir_edit.setText(directory)
 
+    def _current_new_names(self) -> List[str]:
+        """Tính lại đúng danh sách tên file mới cho toàn batch, khớp 1:1 với
+        những gì đang hiển thị trên bảng (kể cả các ô đã sửa tay ở cột "Giá trị
+        nhập tay")."""
+        batch_size = len(self.files)
+        names: List[str] = []
+        for row_index in range(batch_size):
+            values = _compute_row_progression(self.profile, dict(self.base_values), row_index)
+            values["manual_sample"] = self._manual_edits.get(row_index, values.get("manual_sample", ""))
+            names.append(_preview_generate_name(self.profile, values, batch_size=batch_size))
+        return names
+
     def _on_confirm_clicked(self) -> None:
         if not self._output_dir:
             QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng chọn thư mục lưu kết quả trước.")
             return
-        # CHƯA NỐI LOGIC THẬT — sẽ gọi rename_engine.py + ghi file thật ở phiên sau.
-        info_box = QMessageBox(self)
-        info_box.setWindowTitle("Chưa nối logic thật")
-        info_box.setIcon(QMessageBox.Information)
-        info_box.setText(
-            "Đây là bản demo giao diện — chức năng đổi tên & ghi file thật sẽ được "
-            "nối logic ở phiên làm việc sau."
-        )
-        info_box.setStyleSheet(
+
+        new_names = self._current_new_names()
+
+        # An toàn bổ sung: phát hiện trùng tên NGAY TRONG batch (VD gõ tay ô
+        # "Nhập tay" giống nhau ở 2 file khác nhau) TRƯỚC khi đụng vào đĩa —
+        # tránh 1 file mới ghi đè lên đúng file mới vừa tạo ở lượt trước mà
+        # không hỏi gì (khác hẳn bản chất "trùng tên với file có sẵn trên đĩa"
+        # ở mục 8 — đây là lỗi dữ liệu đầu vào, cần sửa lại giá trị nhập tay).
+        seen: Dict[str, int] = {}
+        for name in new_names:
+            seen[name] = seen.get(name, 0) + 1
+        duplicates = sorted(name for name, count in seen.items() if count > 1)
+        if duplicates:
+            QMessageBox.warning(
+                self,
+                "Trùng tên trong danh sách",
+                "Các tên file sau đang bị trùng nhau ngay trong danh sách đổi tên lần này:\n"
+                + "\n".join(duplicates)
+                + '\n\nVui lòng sửa lại giá trị (VD cột "Giá trị nhập tay") cho khác nhau rồi thử lại.',
+            )
+            return
+
+        self.confirm_btn.setEnabled(False)
+        self.confirm_btn.setText("Đang xử lý...")
+        try:
+            def resolve_conflict(candidate_name: str, same_as_source: bool) -> Tuple[str, Optional[str]]:
+                dialog = _RenameConflictDialog(candidate_name, disallow_overwrite=same_as_source, parent=self)
+                dialog.exec()
+                return dialog.action, dialog.new_name
+
+            result = apply_rename_batch(self.files, new_names, self._output_dir, resolve_conflict)
+        finally:
+            self.confirm_btn.setEnabled(True)
+            self.confirm_btn.setText("Xác nhận đổi tên")
+
+        self._show_result_summary(result)
+
+        # GỢI Ý ĐÃ CHỐT: tự động mở thư mục kết quả sau khi đổi tên xong,
+        # đồng bộ hành vi với Tách file/Chèn file/Edit — chỉ mở khi có ít nhất
+        # 1 file ghi thành công (tránh mở thư mục rỗng khi Hủy ngay từ file đầu).
+        if result.success_count > 0:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self._output_dir))
+
+        self.accept()
+
+    def _show_result_summary(self, result: RenameBatchResult) -> None:
+        total = len(self.files)
+        lines = [f"Đã đổi tên thành công {result.success_count}/{total} file."]
+        if result.aborted:
+            lines.append(
+                'Đã dừng ngay tại file đang trùng tên do bấm "Hủy" — các file đã xử lý '
+                "xong trước đó trong danh sách vẫn được giữ nguyên, không bị hoàn tác."
+            )
+        errors = [it for it in result.items if it.status == "error"]
+        if errors:
+            lines.append("")
+            lines.append("Các file gặp lỗi khi ghi (file gốc không bị ảnh hưởng gì):")
+            for it in errors:
+                lines.append(f"- {it.original_name}: {it.message}")
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Kết quả đổi tên")
+        box.setIcon(QMessageBox.Warning if (errors or result.aborted) else QMessageBox.Information)
+        box.setText("\n".join(lines))
+        box.setStyleSheet(
             f"""
             QMessageBox {{ background-color: white; }}
             QMessageBox QLabel {{ color: {COLOR_TEXT_PRIMARY}; font-size: 13px; }}
@@ -2314,8 +2500,7 @@ class _RenamePreviewDialog(QDialog):
             QPushButton:hover {{ background-color: #E28104; }}
             """
         )
-        info_box.exec()
-        self.accept()
+        box.exec()
 
 
 # ----------------------------------------------------------------------
@@ -2325,15 +2510,16 @@ class RenameFeatureWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
-        # Hồ sơ mẫu — HOÀN TOÀN trong bộ nhớ ở bước này (xem docstring đầu file).
-        self._profiles: List[dict] = []
+        # Hồ sơ mẫu — đọc thật từ rename_profiles.json (cùng cấp config.json và
+        # thư mục src, xem RENAME_PROFILES_FILE), tự tạo file rỗng "[]" nếu
+        # chưa có (08_dac_ta_doi_ten.md mục 2). Lỗi đọc (nếu có) chỉ hiện ra
+        # SAU khi UI đã dựng xong (xem cuối __init__), vì result_label chưa
+        # tồn tại ở thời điểm này.
+        self._profile_load_error: Optional[str] = None
+        self._profiles: List[dict] = self._load_profiles()
         self._selected_profile_id: Optional[str] = None
         self._selected_row: Optional[_FileRow] = None
         self._is_locked = False
-
-        # Tạo sẵn rename_profiles.json rỗng cạnh config.json nếu chưa có, theo
-        # 08_dac_ta_doi_ten.md mục 2 — CHƯA đọc/ghi nội dung thật từ file này.
-        self._ensure_profiles_file_exists()
 
         root_layout = QHBoxLayout(self)
         root_layout.setContentsMargins(28, 24, 28, 24)
@@ -2562,19 +2748,33 @@ class RenameFeatureWidget(QWidget):
         self._rebuild_create_profile_menu()
         self._update_rename_button_state()
 
+        # Hiện lỗi đọc rename_profiles.json (nếu có) — đặt cuối cùng vì
+        # result_label chỉ vừa được tạo xong ở trên.
+        if self._profile_load_error:
+            self._show_error(self._profile_load_error)
+
     # ------------------------------------------------------------------
-    # Hồ sơ mẫu (rename_profiles.json — chỉ tạo rỗng, chưa đọc/ghi thật)
+    # Hồ sơ mẫu (đọc/ghi thật rename_profiles.json — 08_dac_ta_doi_ten.md mục 2)
     # ------------------------------------------------------------------
-    @staticmethod
-    def _ensure_profiles_file_exists() -> None:
+    def _load_profiles(self) -> List[dict]:
         try:
-            if not os.path.exists(RENAME_PROFILES_FILE):
-                with open(RENAME_PROFILES_FILE, "w", encoding="utf-8") as f:
-                    f.write("[]")
-        except OSError:
-            # Không chặn hiển thị UI nếu vì lý do nào đó không tạo được file —
-            # chỉ ảnh hưởng bước lưu hồ sơ thật ở phiên làm việc khác.
-            pass
+            return load_profiles(RENAME_PROFILES_FILE)
+        except ProfileStoreError as exc:
+            # Không chặn mở tính năng nếu file hồ sơ cũ bị hỏng — chỉ báo lỗi,
+            # danh sách hồ sơ coi như rỗng cho phiên làm việc này. File hỏng
+            # KHÔNG bị tự động xóa/ghi đè (xem rename_engine.load_profiles) —
+            # chỉ bị ghi đè nếu đại ca tạo/sửa/xóa 1 hồ sơ bất kỳ sau đó.
+            self._profile_load_error = (
+                f"Không đọc được file hồ sơ mẫu đã lưu trước đó ({exc}). "
+                "Danh sách hồ sơ đang trống — tạo/sửa một hồ sơ bất kỳ sẽ ghi đè lại file này."
+            )
+            return []
+
+    def _save_profiles(self) -> None:
+        try:
+            save_profiles(RENAME_PROFILES_FILE, self._profiles)
+        except ProfileStoreError as exc:
+            self._show_error(f"Không lưu được hồ sơ mẫu vào {RENAME_PROFILES_FILE}: {exc}")
 
     def _rebuild_create_profile_menu(self) -> None:
         try:
@@ -2626,6 +2826,7 @@ class RenameFeatureWidget(QWidget):
         if dialog.exec() == QDialog.Accepted:
             new_profile = dialog.get_profile()
             self._profiles.append(new_profile)
+            self._save_profiles()
             self._rebuild_create_profile_menu()
             self._apply_profile(new_profile)
 
@@ -2636,6 +2837,10 @@ class RenameFeatureWidget(QWidget):
         self._rebuild_create_profile_menu()
 
     def _on_profiles_changed_in_manage_dialog(self) -> None:
+        # Ghi lại rename_profiles.json — dialog Quản lý sửa TRỰC TIẾP trên cùng
+        # 1 list self._profiles (tham chiếu, xem docstring _ManageProfilesDialog)
+        # nên chỉ cần lưu lại ở đây, dùng chung cho cả 2 trường hợp Sửa và Xóa.
+        self._save_profiles()
         # Nếu hồ sơ đang áp dụng bị sửa/xóa trong dialog Quản lý, đồng bộ lại Cột B.
         if self._selected_profile_id is not None:
             current = next((p for p in self._profiles if p["id"] == self._selected_profile_id), None)

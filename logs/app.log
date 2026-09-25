@@ -74,3 +74,15 @@
 2026-09-21 23:06:35 [INFO] Đã hoàn tác (Undo) 1 lượt chèn trang ở tính năng Chèn file
 2026-09-21 23:06:37 [INFO] Đã chèn trang 1 của File A vào File B tại vị trí 2
 2026-09-21 23:06:39 [INFO] Đã lưu file Chèn: D:/Temp/PDF_Split_02_Insert.pdf
+2026-09-25 13:58:58 [INFO] Tách file thành công: 'D:/Merged_File.pdf' -> 38 file tại 'D:/temp'
+2026-09-25 13:59:21 [INFO] Tách file thành công: 'D:/Merged_File.pdf' -> 6 file tại 'D:/temp'
+2026-09-25 13:59:33 [INFO] Tách file thành công: 'D:/Merged_File.pdf' -> 19 file tại 'D:/temp'
+2026-09-25 14:01:04 [INFO] Đã chọn File A (Insert): D:/temp/PDF_Split_19.pdf
+2026-09-25 14:01:05 [INFO] Đã chọn File B (Insert): D:/temp/PDF_Split_19_edited.pdf
+2026-09-25 14:01:09 [INFO] Đã chèn trang 2 của File A vào File B tại vị trí 2
+2026-09-25 14:01:17 [INFO] Đã chèn trang 1 của File A vào File B tại vị trí 2
+2026-09-25 14:01:20 [INFO] Đã lưu file Chèn: D:/temp/PDF_Split_19_edited_Insert.pdf
+2026-09-25 14:02:42 [INFO] Đặt mật khẩu thành công: D:/temp/22092026_QT.VHTB-STDVH-OPC_protected.pdf
+2026-09-25 14:03:14 [INFO] Gỡ mật khẩu/giới hạn thành công: D:/temp/22092026_QT.VHTB-STDVH-OPC_protected_unlocked.pdf
+2026-09-25 14:03:57 [INFO] Đã chèn Watermark (Text) vào 'D:/temp/05092026_QT.VHTB-STDVH-OPC.pdf' -> 'D:/temp/05092026_QT.VHTB-STDVH-OPC_Watermark.pdf'
+2026-09-25 14:04:13 [INFO] Đã chèn Watermark (Text) vào 'D:/temp/05092026_QT.VHTB-STDVH-OPC.pdf' -> 'D:/temp/05092026_QT.VHTB-STDVH-OPC_Watermark.pdf'

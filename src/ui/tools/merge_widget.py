@@ -1,23 +1,5 @@
 """
-Giao diện tính năng Gộp File (Merge) — đã nối logic thật với src/pdf_core.py
-(Nhóm A dùng chung: PDFDocument/CorruptedFileError/PasswordProtectedError/
-FileLockedError, get_page_count, list_page_infos, PageRenderer, merge_pdfs —
-không sửa gì trong pdf_core.py).
-
-Cột B: khung xem trước lớn là 1 khung cuộn liên tục nhiều trang (giống Cột B
-của tính năng Tách file) — cuộn chuột bình thường để xem, kéo chuột trái để pan
-khi đã zoom to hơn khung. Click 1 thumbnail ở dải trái sẽ cuộn khung lớn tới đúng
-trang đó (đồng bộ 1 chiều: click thumbnail → cuộn khung lớn; cuộn tay tự do không
-đồng bộ ngược lại dải thumbnail). Zoom In/Out ±15% (50%-200%) đặt cùng hàng tiêu đề.
-Ảnh thumbnail/trang render nền qua QThread (_MergePreviewWorker), không chặn UI.
-
-Cột A: vạch chỉ vị trí kéo-thả file (sắp xếp danh sách) màu đỏ, có vùng đệm quanh
-tâm mỗi dòng để tránh nhấp nháy khi rê chuột nhẹ quanh điểm giữa. Có ô nhập tên
-file kết quả (gợi ý sẵn PDF_Merger.pdf) — bấm "Gộp File" sẽ hỏi thư mục lưu, kiểm
-tra trùng tên (Ghi đè / Đổi tên khác / Hủy) rồi gọi merge_pdfs().
-
-Khung trang trong Cột B không highlight viền cam khi "đang chọn" — giữ nguyên 1
-kiểu hiển thị, không cần trạng thái hover/current riêng cho nội dung preview.
+/src/ui/tools/merge_widget.py
 """
 from __future__ import annotations
 
@@ -60,7 +42,7 @@ from src.ui.vishipel_theme import (
     CORNER_RADIUS,
 )
 
-# Nhóm A (dùng chung với Tách file) — chỉ IMPORT, không sửa nội dung pdf_core.py.
+# Nhóm A 
 from src.pdf_core import (
     CorruptedFileError,
     PasswordProtectedError,
@@ -75,14 +57,11 @@ from src.pdf_core import (
 # ----------------------------------------------------------------------
 # Hằng số nghiệp vụ
 # ----------------------------------------------------------------------
-# Tên file gợi ý mặc định (02_dac_ta_tinh_nang.md mục 2) — vẫn cho sửa qua ô nhập.
+# Tên file gợi ý mặc định 
 _DEFAULT_OUTPUT_NAME = "PDF_Merger.pdf"
 
-# Render thumbnail ở độ phân giải cao hơn kích thước hiển thị (72px) để nét khi
-# hiển thị trên màn hình mật độ điểm ảnh cao.
 _THUMB_RENDER_WIDTH = 220
-# Render khung xem trước lớn 1 lần ở độ phân giải cao, tái sử dụng khi Zoom
-# (setFixedSize co giãn khung chứa, không cần render lại mỗi lần bấm Zoom).
+
 _DETAIL_RENDER_WIDTH = 1200
 
 _ROW_ICON_SIZE = 34
@@ -90,36 +69,30 @@ _HANDLE_ICON_SIZE = 18
 _PILL_BG = "#F3F4F6"
 _DROPZONE_ICON_BOX = 56
 
-# Đã thu nhỏ thumbnail để dành diện tích cho xem trước
 _THUMB_STRIP_WIDTH = 115
 _THUMB_W, _THUMB_H = 72, 94
-# Khoảng thụt vào giữa ảnh thumbnail và mép frame — chừa chỗ cho viền/màu nền
-# accent khi "đang chọn" hiển thị rõ (xem _PreviewThumb).
+
 _THUMB_BORDER_INSET = 3
 _BADGE_SIZE = 18
 _DRAG_THRESHOLD = 8
-# Đường kẻ báo vị trí sẽ chèn file khi kéo-thả (kiểu PowerPoint) — màu đỏ để tách
-# biệt rõ với màu Accent cam đang dùng cho trạng thái "đang chọn".
+
 _DROP_INDICATOR_COLOR = COLOR_ERROR
 _DROP_INDICATOR_HEIGHT = 4
 _DROP_INDICATOR_DOT_SIZE = 10
-# Vùng đệm quanh tâm mỗi dòng (tỉ lệ theo chiều cao dòng) — trong vùng này giữ
-# nguyên vị trí vạch đang hiển thị, chỉ đổi khi chuột vượt hẳn ra khỏi vùng đệm,
-# tránh vạch nhấp nháy đổi vị trí liên tục khi rê chuột nhẹ quanh điểm giữa.
+
 _DROP_DEADZONE_RATIO = 0.20
 
 # Zoom Cột B: mỗi lần bấm Zoom In/Out ±15%, giới hạn 50%-200%.
-# Mặc định 100% = chiều rộng "vừa khít khung hiển thị" hiện tại (đồng bộ với Split).
+
 _ZOOM_MIN = 0.5
 _ZOOM_MAX = 2.0
 _ZOOM_STEP = 0.15
 _ZOOM_DEFAULT = 1.0
 
-# Lề trái/phải giữa nội dung preview và biên khung Cột B.
+
 _PREVIEW_SIDE_MARGIN = 12
 _PREVIEW_MIN_PAGE_WIDTH = 220
-# Tỉ lệ khung hình dự phòng — chỉ dùng khi không đọc được kích thước trang thật
-# (VD lỗi đọc file khi build khung rỗng trước lúc render).
+
 _PREVIEW_PAGE_WIDTH_FALLBACK = 340
 _PREVIEW_PAGE_HEIGHT_DEFAULT = 460
 
@@ -189,7 +162,6 @@ def _zoom_button_style() -> str:
             border-color: {COLOR_BORDER};
         }}
         """
-
 
 # ----------------------------------------------------------------------
 # A1 — Khối chọn file
@@ -283,7 +255,6 @@ class _DropZone(QFrame):
         if paths:
             self.files_selected.emit(paths)
 
-
 # ----------------------------------------------------------------------
 # Danh sách file kéo-thả
 # ----------------------------------------------------------------------
@@ -337,10 +308,6 @@ class _DraggableFileList(QListWidget):
         rect = self.visualItemRect(item)
         center_y = rect.center().y()
 
-        # Vùng đệm quanh tâm dòng: nếu lần tính trước đã "chốt" 1 trong 2 khả năng
-        # của đúng dòng này (trước dòng = index, hoặc sau dòng = index + 1), và
-        # chuột vẫn còn trong vùng đệm quanh tâm, giữ nguyên kết quả cũ — tránh
-        # vạch nhấp nháy đổi vị trí liên tục khi rê chuột nhẹ quanh điểm giữa.
         deadzone = max(1, round(rect.height() * _DROP_DEADZONE_RATIO))
         previous = self._drop_indicator_index
         if previous is not None and previous in (index, index + 1):
@@ -397,7 +364,6 @@ class _DragHandle(QLabel):
         self.setCursor(Qt.OpenHandCursor)
         self.setStyleSheet("background: transparent; border: none;")
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-
 
 # ----------------------------------------------------------------------
 # A3 — 1 dòng trong danh sách file
@@ -563,9 +529,7 @@ class _FileRow(QFrame):
         list_widget = self.list_widget
         source_index = self.current_index()
         viewport_pos = self._to_list_viewport_pos(current_pos)
-        # Tính target_index TRƯỚC khi xoá vạch chỉ thị — để vùng đệm (dead-zone)
-        # dùng đúng giá trị đang hiển thị lúc thả chuột, tránh trường hợp vạch cho
-        # thấy 1 vị trí nhưng lúc thả lại chèn vào vị trí khác do bị reset về None.
+
         target_index = (
             list_widget.compute_drop_index_from_viewport_pos(viewport_pos)
             if (list_widget is not None and viewport_pos is not None)
@@ -594,9 +558,6 @@ class _PreviewThumb(QFrame):
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedSize(_THUMB_W, _THUMB_H)
 
-        # Ảnh thumbnail thật — đặt làm nền, nằm dưới badge số trang. Thụt vào so
-        # với mép frame (không phủ kín 0,0→W,H) để viền + màu nền accent khi
-        # "đang chọn" (_apply_style) vẫn hiển thị được, không bị ảnh đè mất.
         inset = _THUMB_BORDER_INSET
         self.image_label = QLabel(self)
         self.image_label.setGeometry(
@@ -650,9 +611,7 @@ class _PreviewThumb(QFrame):
 
 
 # ----------------------------------------------------------------------
-# Cột B — QScrollArea hỗ trợ kéo bằng chuột trái (pan) khi nội dung vượt khung,
-# và phát tín hiệu khi kích thước viewport đổi để widget cha tính lại chiều rộng
-# trang preview cho vừa khung (responsive fit-width). Đồng bộ với split_widget.py.
+# Cột B — QScrollArea 
 # ----------------------------------------------------------------------
 class _PannablePreviewScrollArea(QScrollArea):
     viewport_resized = Signal()
@@ -705,14 +664,9 @@ class _PannablePreviewScrollArea(QScrollArea):
 
 
 # ----------------------------------------------------------------------
-# Cột B — 1 trang trong khung xem trước lớn, hiển thị ảnh trang PDF thật
+# Cột B
 # ----------------------------------------------------------------------
 class _MergePreviewPage(QFrame):
-    """1 khung trang trong danh sách cuộn liên tục bên phải — hiển thị ảnh trang
-    thật (render nền qua PageRenderer). Không highlight viền cam khi "đang chọn"
-    (khác với dải thumbnail trái) — nội dung preview giữ nguyên 1 kiểu, không cần
-    trạng thái hover/current riêng."""
-
     def __init__(self, page_number: int, aspect_ratio: float,
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -738,10 +692,7 @@ class _MergePreviewPage(QFrame):
 
 
 # ----------------------------------------------------------------------
-# Worker render nền cho Cột B — theo đúng luồng đã chốt ở
-# 04_kien_truc_module_va_flow.md mục 5: list_page_infos đọc metadata đồng bộ để
-# dựng khung trước, ảnh thật (thumbnail + trang lớn) render nền qua QThread để
-# không chặn UI. Chỉ dùng PageRenderer sẵn có của pdf_core (Nhóm A), không sửa gì.
+# Worker render nền cho Cột B
 # ----------------------------------------------------------------------
 class _MergePreviewWorker(QThread):
     thumb_ready = Signal(int, int, bytes)   # token, page_index (0-based), PNG bytes
@@ -806,18 +757,14 @@ class MergeFeatureWidget(QWidget):
         self._preview_pages: Dict[int, _MergePreviewPage] = {}
         self._zoom_level: float = _ZOOM_DEFAULT
         self._current_preview_width: Optional[int] = None
-        # Trang được dựng ngay trong __init__ (trước khi cửa sổ hiển thị xong),
-        # lúc đó viewport().width() đọc được còn sai (quá nhỏ) nên chiều rộng trang
-        # bị tính sai theo → cần tính lại đúng 1 lần khi widget thật sự hiển thị.
+
         self._initial_width_applied = False
 
-        # Render nền cho Cột B (xem 04_kien_truc_module_va_flow.md mục 5).
+        # Render nền cho Cột B 
         self._renderer = PageRenderer()
         self._render_worker: Optional[_MergePreviewWorker] = None
         self._render_token = 0
 
-        # Lưu lại lần gộp gần nhất để nút "Thử lại" (lỗi FileLockedError) không
-        # phải bắt người dùng chọn lại thư mục/tên file từ đầu.
         self._last_merge_attempt: Optional[Tuple[List[str], str]] = None
 
         root_layout = QHBoxLayout(self)
@@ -908,8 +855,7 @@ class MergeFeatureWidget(QWidget):
 
         column_a.addWidget(list_card, 1)
 
-        # --- A3: Tên file kết quả (đã chốt ở 02_dac_ta_tinh_nang.md mục 2 —
-        # gợi ý sẵn "PDF_Merger.pdf", người dùng sửa được) ---
+        # --- A3: Tên file kết quả 
         name_block = QVBoxLayout()
         name_block.setSpacing(6)
 
@@ -1001,9 +947,6 @@ class MergeFeatureWidget(QWidget):
         self.result_label.hide()
         result_row.addWidget(self.result_label, 1)
 
-        # Nút "Thử lại" — chỉ hiện khi lỗi ghi file do bị khóa bởi chương trình
-        # khác (02_dac_ta_tinh_nang.md mục 6), bấm để ghi lại đúng file/thư mục
-        # vừa chọn mà không bắt chọn lại từ đầu.
         self.retry_button = QPushButton("Thử lại")
         self.retry_button.setCursor(Qt.PointingHandCursor)
         self.retry_button.setFixedHeight(28)
@@ -1052,8 +995,7 @@ class MergeFeatureWidget(QWidget):
         header_row.addWidget(self.preview_title)
         header_row.addStretch()
 
-        # Cụm Zoom Out / % / Zoom In — thay cho nút chuyển trang cũ (◀ X/Y ▶),
-        # vì giờ xem trang bằng cách cuộn chuột liên tục thay vì nhảy từng trang.
+        # Cụm Zoom Out / % / Zoom In
         self.zoom_out_btn = QToolButton()
         self.zoom_out_btn.setCursor(Qt.PointingHandCursor)
         self.zoom_out_btn.setIcon(qta.icon("mdi6.magnify-minus-outline", color=COLOR_TEXT_PRIMARY))
@@ -1103,9 +1045,7 @@ class MergeFeatureWidget(QWidget):
         self.thumb_scroll.setWidget(self.thumb_container)
         body_row.addWidget(self.thumb_scroll)
 
-        # Khung xem trước lớn — cuộn liên tục nhiều trang (thay cho khung 1 trang cố
-        # định trước đây), dùng _PannablePreviewScrollArea để hỗ trợ cuộn chuột +
-        # kéo chuột trái (pan) khi đã zoom to hơn khung, đồng bộ với split_widget.py.
+        # Khung xem trước lớn — cuộn liên tục nhiều trang
         self.preview_scroll_b = _PannablePreviewScrollArea()
         self.preview_scroll_b.setWidgetResizable(True)
         self.preview_scroll_b.setStyleSheet(
@@ -1249,8 +1189,6 @@ class MergeFeatureWidget(QWidget):
         elif key == "pages":
             rows_data.sort(key=lambda r: r[3], reverse=True)
 
-        # Dùng path (không dùng name) để chọn lại đúng file sau khi sắp xếp —
-        # tránh nhầm khi 2 file trùng tên nhưng khác thư mục nguồn.
         selected_path = self._selected_row.path if self._selected_row else None
         self.file_list.clear()
         self._selected_row = None
@@ -1265,8 +1203,6 @@ class MergeFeatureWidget(QWidget):
     # Sự kiện
     # ------------------------------------------------------------------
     def _on_files_selected(self, paths: List[str]) -> None:
-        # Theo 02_dac_ta_tinh_nang.md mục 6: file hỏng/có mật khẩu bị loại khỏi
-        # danh sách, báo lỗi rõ ràng, không crash, vẫn thêm tiếp các file hợp lệ.
         skipped: List[str] = []
         for path in paths:
             name = os.path.basename(path)
@@ -1324,8 +1260,6 @@ class MergeFeatureWidget(QWidget):
             self.output_name_edit.text().strip() or _DEFAULT_OUTPUT_NAME
         )
 
-        # Theo 02_dac_ta_tinh_nang.md mục 0: người dùng tự chọn thư mục lưu,
-        # không mặc định cứng.
         output_dir = QFileDialog.getExistingDirectory(self, "Chọn thư mục lưu kết quả")
         if not output_dir:
             return
@@ -1371,8 +1305,8 @@ class MergeFeatureWidget(QWidget):
 
         self._last_merge_attempt = None
         self._show_success(f"Đã gộp {len(ordered_paths)} file thành công → {output_path}")
-        # Tự động mở thư mục kết quả (Windows Explorer) — đồng bộ hành vi với
-        # tính năng Tách file (04_kien_truc_module_va_flow.md mục 5).
+
+        # Tự động mở thư mục kết quả (Windows Explorer)
         QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(output_path)))
 
     def _retry_last_merge(self) -> None:
@@ -1382,9 +1316,6 @@ class MergeFeatureWidget(QWidget):
         self._write_merged_file(ordered_paths, output_path)
 
     def _ask_overwrite_decision(self, file_name: str) -> str:
-        """Popup style riêng (không dùng mặc định) theo 01_dac_ta_giao_dien.md
-        mục 3: nền trắng, chữ tối màu, nút Accent cho hành động chính. 3 lựa chọn
-        theo 02_dac_ta_tinh_nang.md mục 6: Ghi đè / Đổi tên khác / Hủy."""
         box = QMessageBox(self)
         box.setWindowTitle("Trùng tên file")
         box.setIcon(QMessageBox.Warning)
@@ -1480,9 +1411,6 @@ class MergeFeatureWidget(QWidget):
         self._select_row(first_row)
 
     def _load_preview(self, path: str) -> None:
-        """Theo đúng luồng đã chốt ở 04_kien_truc_module_va_flow.md mục 5:
-        list_page_infos đọc metadata thật (đồng bộ, nhanh) để dựng khung trước,
-        sau đó ảnh thật render nền qua QThread, không chặn UI."""
         self._cancel_active_render()
 
         name = os.path.basename(path)
@@ -1546,21 +1474,12 @@ class MergeFeatureWidget(QWidget):
                 "background: transparent; border: none;"
             )
             wrapper_layout.addWidget(num_label)
-
-            # Khóa cứng chiều cao đúng bằng nội dung thật (thumb + nhãn số) —
-            # nếu không, khi tổng số thumbnail ít hơn chiều cao khung cuộn,
-            # QScrollArea (setWidgetResizable=True) sẽ kéo container cao lên và
-            # layout dồn khoảng trống thừa xen giữa các thumbnail thay vì để
-            # trống ở cuối, gây giãn cách bất thường.
             wrapper.setFixedHeight(wrapper.sizeHint().height())
 
             self.thumb_layout.addWidget(wrapper, alignment=Qt.AlignTop)
             self._preview_thumbs.append(thumb)
 
     def _build_preview_pages(self, infos: List[PageInfo]) -> None:
-        """Dựng lại danh sách khung trang lớn (Cột B) theo file đang chọn — khung
-        rỗng dựng trước theo đúng tỉ lệ khung hình thật của từng trang (PageInfo),
-        ảnh được điền vào sau khi worker render xong (_on_page_ready)."""
         for frame in self._preview_pages.values():
             self.preview_layout.removeWidget(frame)
             frame.deleteLater()
@@ -1575,8 +1494,6 @@ class MergeFeatureWidget(QWidget):
         self._current_preview_width = width
         for info in infos:
             page_number = info.source_index + 1
-            # Trang xoay 90/270 độ thì kích thước hiển thị (rộng x cao) đảo chiều
-            # so với kích thước gốc trong PDF.
             if info.rotation in (90, 270):
                 eff_w, eff_h = info.height, info.width
             else:
@@ -1654,16 +1571,12 @@ class MergeFeatureWidget(QWidget):
             current_thumb = self._preview_thumbs[self._current_page - 1]
             self.thumb_scroll.ensureWidgetVisible(current_thumb, 0, 20)
 
-        # Khung lớn Cột B: chỉ cuộn tới đúng trang, không highlight viền (nội dung
-        # preview giữ nguyên 1 kiểu, không cần trạng thái hover/current riêng).
-        # Lưu ý: đây là đồng bộ 1 chiều — cuộn tay tự do trong khung lớn không
-        # cập nhật ngược lại highlight ở dải thumbnail trái (đã thống nhất với đại ca).
         current_frame = self._preview_pages.get(self._current_page)
         if current_frame is not None:
             self.preview_scroll_b.ensureWidgetVisible(current_frame, 0, 0)
 
     # ------------------------------------------------------------------
-    # Zoom cho khung xem trước lớn (Cột B) — đồng bộ với split_widget.py
+    # Zoom cho khung xem trước lớn (Cột B)
     # ------------------------------------------------------------------
     def _fit_base_width(self) -> int:
         viewport_width = self.preview_scroll_b.viewport().width()
@@ -1721,9 +1634,6 @@ class MergeFeatureWidget(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        # Lần hiển thị đầu tiên: cửa sổ đã có kích thước thật, tính lại chiều rộng
-        # trang cho khớp khung Cột B thật sự (sửa lỗi khoảng trắng lớn 2 bên do
-        # trang mock bị dựng quá sớm lúc __init__, khi viewport còn chưa có size đúng).
         if not self._initial_width_applied and self._preview_pages:
             self._initial_width_applied = True
             self._current_preview_width = None

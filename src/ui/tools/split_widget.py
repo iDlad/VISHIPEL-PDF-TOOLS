@@ -1,16 +1,5 @@
 """
-Giao diện tính năng Tách File (Split) — ĐÃ NỐI LOGIC THẬT với pdf_core.py.
-
-Bố cục 2 cột (A ~55% - B ~45%):
-- Cột A: A1 khối chọn file, A3 khung chứa tiêu đề + lưới thumbnail (render thật).
-  Mỗi thumbnail có badge số trang cố định góc trên-trái, hiển thị mọi lúc (kể cả
-  trước/sau khi ảnh thật render xong).
-- Cột B: Khung chứa tiêu đề + preview cuộn liên tục nhiều trang (render thật).
-  Hỗ trợ Zoom In/Out (mỗi lần ±15%, giới hạn 50%-200%, mặc định 100% = vừa khít
-  khung hiển thị) và kéo bằng chuột trái (pan) khi nội dung vượt khung.
-
-Render thumbnail/preview chạy nền qua QThread (_PageRenderWorker) để không đơ UI
-khi file nhiều trang — cập nhật ảnh từng trang một ngay khi render xong (progressive).
+/src/ui/tools/split_widget.py
 """
 from __future__ import annotations
 
@@ -66,28 +55,18 @@ _GRID_COLUMNS = 3
 _THUMB_SIZE = 128
 _FLAG_BAR_WIDTH = 6
 
-# Kích thước render thực tế lớn hơn kích thước hiển thị để ảnh nét, đặc biệt trên
-# màn hình có DPI cao — sau đó co lại vừa khung hiển thị (KeepAspectRatio).
-# _PREVIEW_RENDER_WIDTH tăng lên 1000 (từ 700) để ảnh không vỡ nét khi zoom tới 200%.
 _THUMB_RENDER_WIDTH = 220
 _PREVIEW_RENDER_WIDTH = 1000
 
-# Chỉ còn dùng làm tỉ lệ khung hình DỰ PHÒNG khi không đọc được kích thước trang thật
-# (info.width / info.height bằng 0) — chiều rộng thực tế của từng trang preview giờ
-# co giãn theo khung Cột B + hệ số zoom, xem _compute_preview_width().
 _PREVIEW_PAGE_WIDTH_FALLBACK = 340
 _PREVIEW_PAGE_HEIGHT_DEFAULT = 460
 
 # Zoom Cột B: mỗi lần bấm Zoom In/Out ±15%, giới hạn 50%-200%.
-# Mặc định 100% = chiều rộng "vừa khít khung hiển thị" hiện tại (không phải số px cố định)
-# — nhờ vậy trang preview không còn bị bé cố định như trước, tự to theo cửa sổ.
 _ZOOM_MIN = 0.5
 _ZOOM_MAX = 2.0
 _ZOOM_STEP = 0.15
 _ZOOM_DEFAULT = 1.0
 
-# Lề trái/phải giữa nội dung preview và biên khung Cột B — dùng để tính chiều rộng
-# "vừa khít khung" và để set contents margins của preview_layout cho đồng nhất.
 _PREVIEW_SIDE_MARGIN = 12
 _PREVIEW_MIN_PAGE_WIDTH = 220
 
@@ -119,8 +98,6 @@ def _spin_arrow_style(is_top: bool) -> str:
 
 
 def _zoom_button_style() -> str:
-    """Style cho 2 nút Zoom In/Out ở header Cột B — vuông bo góc nhẹ, tự mờ khi
-    chạm giới hạn min/max (QToolButton:disabled)."""
     return f"""
         QToolButton {{
             background-color: white;
@@ -167,13 +144,9 @@ _SCROLLBAR_QSS = f"""
 
 
 # ----------------------------------------------------------------------
-# Worker nền: render thumbnail + preview cho từng trang, không đụng UI thread
+# Worker nền
 # ----------------------------------------------------------------------
 class _PageRenderWorker(QThread):
-    """Render tuần tự từng trang (thumbnail nhỏ cho Cột A + ảnh lớn cho Cột B),
-    phát tín hiệu ngay khi xong 1 trang để UI cập nhật dần (progressive), không
-    chờ render hết toàn bộ file mới hiển thị gì đó."""
-
     page_rendered = Signal(int, bytes, bytes)  # page_index (0-based), thumb_png, preview_png
     render_error = Signal(str)
 
@@ -209,8 +182,7 @@ class _PageRenderWorker(QThread):
 
 
 # ----------------------------------------------------------------------
-# A3 — 1 ô trong lưới thumbnail: số trang (lúc đang tải) → ảnh thật (khi render xong)
-#      + vạch cờ đỏ bên phải + badge số trang cố định góc trên-trái
+# A3 — 1 ô trong lưới thumbnail
 # ----------------------------------------------------------------------
 class _PageThumbnail(QWidget):
     clicked = Signal(int)
@@ -251,9 +223,6 @@ class _PageThumbnail(QWidget):
 
         row_layout.addWidget(self.card)
 
-        # Badge số trang — luôn hiển thị cố định góc trên-trái của card, không phụ
-        # thuộc trạng thái ảnh (khắc phục việc mất số trang sau khi ảnh render xong).
-        # Đặt geometry tuyệt đối (không qua layout) vì self.card đã fix size 128x128.
         self.badge_label = QLabel(str(page_number), self.card)
         self.badge_label.setAlignment(Qt.AlignCenter)
         self.badge_label.setStyleSheet(
@@ -315,7 +284,6 @@ class _PageThumbnail(QWidget):
         super().mousePressEvent(event)
         self.clicked.emit(self.page_number)
 
-
 # ----------------------------------------------------------------------
 # Checkbox tùy chỉnh
 # ----------------------------------------------------------------------
@@ -354,9 +322,7 @@ class _CheckToggle(QToolButton):
 
 
 # ----------------------------------------------------------------------
-# Cột B — QScrollArea hỗ trợ kéo bằng chuột trái (pan) khi nội dung vượt khung,
-# và phát tín hiệu khi kích thước viewport đổi để widget cha tính lại chiều rộng
-# trang preview cho vừa khung (responsive fit-width).
+# Cột B — QScrollArea 
 # ----------------------------------------------------------------------
 class _PannablePreviewScrollArea(QScrollArea):
     viewport_resized = Signal()
@@ -374,7 +340,6 @@ class _PannablePreviewScrollArea(QScrollArea):
         self.viewport_resized.emit()
 
     def _event_pos(self, event):
-        # Qt6/PySide6: dùng position() (QPointF) thay vì pos() đã deprecated.
         if hasattr(event, "position"):
             return event.position().toPoint()
         return event.pos()
@@ -517,8 +482,6 @@ class SplitFeatureWidget(QWidget):
         self._renderer = PageRenderer()
         self._render_worker: Optional[_PageRenderWorker] = None
 
-        # Cache PNG bytes của từng trang preview (Cột B) để zoom in/out chỉ cần
-        # scale lại ảnh đã có, không phải render lại từ PDF.
         self._preview_png_cache: Dict[int, bytes] = {}
         self._zoom_level: float = _ZOOM_DEFAULT
         self._current_preview_width: Optional[int] = None
@@ -602,9 +565,6 @@ class SplitFeatureWidget(QWidget):
             f"color: {COLOR_TEXT_SECONDARY}; font-size: 13px; background: transparent; border: none;"
         )
 
-        # QStackedWidget thay vì setVisible() qua lại: 2 trang (rỗng / lưới thumbnail)
-        # luôn chiếm đúng 1 vùng kích thước cố định ngay dưới header — nhờ đó header
-        # "File được chọn" không bao giờ bị đẩy lệch vị trí khi chuyển trạng thái.
         self.a3_content_stack = QStackedWidget()
         self.a3_content_stack.addWidget(self.empty_state_label)
         self.a3_content_stack.addWidget(self.preview_scroll)
@@ -808,8 +768,7 @@ class SplitFeatureWidget(QWidget):
         )
         b_header_layout.addWidget(self.preview_title_label, stretch=1)
 
-        # Cụm Zoom Out / % / Zoom In — canh phải cùng hàng tiêu đề (title đã chiếm
-        # stretch=1 ở trên nên các widget thêm sau tự động dồn sang phải).
+        # Cụm Zoom Out / % / Zoom In
         self.zoom_out_btn = QToolButton()
         self.zoom_out_btn.setCursor(Qt.PointingHandCursor)
         self.zoom_out_btn.setIcon(qta.icon("mdi6.magnify-minus-outline", color=COLOR_TEXT_PRIMARY))
@@ -841,8 +800,6 @@ class SplitFeatureWidget(QWidget):
 
         preview_box_layout.addWidget(b_header)
 
-        # Khung Preview cuộn dọc — dùng _PannablePreviewScrollArea để hỗ trợ kéo
-        # bằng chuột trái (pan) và báo khi kích thước khung đổi (responsive fit-width).
         self.preview_scroll_b = _PannablePreviewScrollArea()
         self.preview_scroll_b.setWidgetResizable(True)
         self.preview_scroll_b.setStyleSheet(
@@ -922,8 +879,6 @@ class SplitFeatureWidget(QWidget):
             self.thumb_grid.addWidget(thumb, row, col, alignment=Qt.AlignCenter)
             self._thumbnails.append(thumb)
 
-        # --- BỔ SUNG HÀNG ĐỆM DỒN LÊN TRÊN ---
-        # Tính số hàng hiện tại và gán stretch=1 cho hàng tiếp theo để hút không gian thừa phía dưới
         total_rows = (total_pages + _GRID_COLUMNS - 1) // _GRID_COLUMNS if total_pages > 0 else 0
         self.thumb_grid.setRowStretch(total_rows, 1)
         # --------------------------------------
@@ -958,8 +913,6 @@ class SplitFeatureWidget(QWidget):
         image_label.hide()
         frame_layout.addWidget(image_label)
 
-        # Gắn tham chiếu để cập nhật ảnh + tỉ lệ khung hình khi render xong hoặc khi
-        # zoom thay đổi (xem _set_preview_frame_image, _apply_preview_zoom).
         frame.number_label = number_label
         frame.image_label = image_label
         frame.aspect_ratio = aspect_ratio
@@ -1064,8 +1017,6 @@ class SplitFeatureWidget(QWidget):
     def _on_thumbnail_clicked(self, page_number: int) -> None:
         self._select_page(page_number)
         if self.custom_checkbox.isChecked():
-            # Trang cuối cùng không có "ranh giới sau nó" trong file nên bỏ qua,
-            # tránh tạo cờ không hợp lệ khi gọi pdf_core.split_by_flags.
             if page_number < len(self._thumbnails):
                 thumb = self._thumbnails[page_number - 1]
                 thumb.set_flagged(not thumb.is_flagged)
@@ -1096,21 +1047,15 @@ class SplitFeatureWidget(QWidget):
     # Zoom + Pan cho khu vực Xem trước (Cột B)
     # ------------------------------------------------------------------
     def _fit_base_width(self) -> int:
-        """Chiều rộng 'vừa khít khung' tại mốc zoom 100% — tính theo chiều rộng
-        thật của viewport Cột B hiện tại (co giãn theo cửa sổ), trừ lề 2 bên."""
         viewport_width = self.preview_scroll_b.viewport().width()
         usable = viewport_width - (_PREVIEW_SIDE_MARGIN * 2)
         return max(_PREVIEW_MIN_PAGE_WIDTH, usable)
 
     def _compute_preview_width(self) -> int:
-        """Chiều rộng trang preview thực tế = chiều rộng 'vừa khít khung' (100%)
-        nhân với hệ số zoom hiện tại."""
         base_width = self._fit_base_width()
         return max(_PREVIEW_MIN_PAGE_WIDTH, round(base_width * self._zoom_level))
 
     def _apply_preview_zoom(self) -> None:
-        """Tính lại chiều rộng trang theo zoom + kích thước khung hiện tại, áp dụng
-        cho toàn bộ trang đang hiển thị — dùng ảnh đã cache, không render lại."""
         if not self._preview_pages:
             self._update_zoom_buttons_state()
             self._update_zoom_percent_label()
@@ -1169,10 +1114,6 @@ class SplitFeatureWidget(QWidget):
     # ------------------------------------------------------------------
     @staticmethod
     def _compute_fixed_segments(total: int, pages_per_file: int) -> List[tuple]:
-        """Dự đoán các đoạn (start, end) — PHẢI khớp logic split_by_fixed_count trong
-        pdf_core.py. Dùng để: (1) biết trước sẽ có bao nhiêu file kết quả (từ đó suy ra
-        danh sách tên PDF_Split_01, 02... để kiểm tra trùng tên trước khi ghi), và
-        (2) validate dữ liệu phía UI. Việc tách file thật luôn do pdf_core thực hiện."""
         segments = []
         start = 0
         while start < total:
@@ -1194,8 +1135,6 @@ class SplitFeatureWidget(QWidget):
         return segments
 
     def _confirm_overwrite(self, duplicate_count: int) -> bool:
-        """Hộp thoại xác nhận ghi đè khi phát hiện trùng tên file — style tường minh,
-        không phụ thuộc theme toàn app (tránh bị chữ trắng-trên-trắng do QSS toàn cục)."""
         msg_box = QMessageBox(self)
         msg_box.setIcon(QMessageBox.Warning)
         msg_box.setWindowTitle("Trùng tên file")
@@ -1272,13 +1211,11 @@ class SplitFeatureWidget(QWidget):
                 return
             segments = self._compute_flag_segments(total, flag_positions)
 
-        # Chọn thư mục lưu kết quả (Save As style) — tên file dùng mặc định pdf_core tự sinh
+        # Chọn thư mục lưu kết quả (Save As style) 
         output_dir = QFileDialog.getExistingDirectory(self, "Chọn thư mục lưu kết quả")
         if not output_dir:
             return  # người dùng hủy chọn thư mục
 
-        # Tên file kết quả theo quy ước đã chốt: PDF_Split_01.pdf, PDF_Split_02.pdf...
-        # (đánh số theo đúng thứ tự file sẽ được tạo ra — xem pdf_core._extract_pages_and_save)
         predicted_names = [f"PDF_Split_{i:02d}.pdf" for i in range(1, len(segments) + 1)]
         duplicates = [n for n in predicted_names if os.path.exists(os.path.join(output_dir, n))]
         if duplicates:
@@ -1312,7 +1249,7 @@ class SplitFeatureWidget(QWidget):
             log_error(f"Tách file thất bại (dữ liệu không hợp lệ): {exc}", exc)
             self._show_error(str(exc))
             return
-        except Exception as exc:  # phòng lỗi phát sinh ngoài dự kiến
+        except Exception as exc: 
             log_error("Lỗi không xác định khi tách file", exc)
             self._show_error("Đã xảy ra lỗi không xác định khi tách file.")
             return

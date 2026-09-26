@@ -1,32 +1,5 @@
 """
-Giao diện tính năng Đổi tên (Rename) — CHỈ XÂY DỰNG GIAO DIỆN, CHƯA NỐI LOGIC THẬT.
-
-Theo đặc tả đã chốt ở 08_dac_ta_doi_ten.md. Toàn bộ phần "sinh tên file thật"
-(rename_engine.py) và "ghi file ra đĩa" đều CHƯA tồn tại — mọi chỗ cần dữ liệu đó
-trong file này dùng hàm placeholder `_preview_generate_name()` (đánh dấu rõ TẠM
-THỜI ngay tại chỗ khai báo) chỉ để có chữ hiển thị lên bảng xem trước, KHÔNG phải
-thuật toán chính thức. Khi sang phiên nối logic thật, thay `_preview_generate_name`
-bằng lời gọi `rename_engine.py` thật, giữ nguyên toàn bộ phần UI.
-
-Hồ sơ mẫu (profile) hiện quản lý HOÀN TOÀN trong bộ nhớ (tạo/sửa/xóa qua các dialog
-đều hoạt động thật để kiểm tra hiển thị) nhưng CHƯA đọc/ghi `rename_profiles.json`
-— file đó chỉ được tạo rỗng cạnh `config.json` (xem 08_dac_ta_doi_ten.md mục 2),
-việc đọc/ghi thật sẽ nối ở phiên làm việc khác.
-
-Tái sử dụng đúng phong cách thiết kế của merge_widget.py để đồng bộ giao diện:
-DropZone, danh sách file kéo-thả (_DraggableFileList/_FileRow), khung card bo góc
-14px viền COLOR_BORDER, control cao 38px bo góc 8px, dialog xác nhận tự vẽ nền
-trắng/chữ tối/nút Accent, QMessageBox có stylesheet tường minh.
-
-Cột A: danh sách file đã chọn, kéo-thả đổi thứ tự (thứ tự này quyết định thứ tự
-sinh Ngày/Ca/Số thứ tự tự tăng) — TỰ ĐỘNG KHÓA HOÀN TOÀN (không thêm/xóa/kéo-thả
-được) ngay khi đã chọn 1 hồ sơ mẫu ở nút "Tạo biểu mẫu", chỉ mở khóa lại khi bấm
-"Clear" (đúng bảng 6.1).
-
-Cột B: `QStackedWidget` 2 trang — "Preview" (xem trước trang 1 của file đang chọn
-ở Cột A, dùng chung `list_page_infos`/`PageRenderer` với các tính năng khác, đọc
-thật — không phải giả) và "Form nhập liệu" (đổi nội dung theo đúng hồ sơ đang chọn:
-Vận hành có/không Ca, hoặc Phát sinh nhiều khối).
+/src/ui/tools/rename_widget.py
 """
 from __future__ import annotations
 
@@ -80,8 +53,6 @@ from src.ui.vishipel_theme import (
     CORNER_RADIUS,
 )
 
-# Nhóm A (dùng chung với Tách file/Gộp file) — chỉ ĐỌC thông tin file để hiển thị
-# preview/số trang, KHÔNG phải logic đổi tên. Không sửa gì trong pdf_core.py.
 from src.pdf_core import (
     CorruptedFileError,
     PasswordProtectedError,
@@ -92,11 +63,6 @@ from src.pdf_core import (
     PageRenderer,
 )
 
-# Lõi đổi tên thật (mới nối logic) — thuần logic, không phụ thuộc PySide6, xem
-# src/rename_engine.py. Đặt bí danh generate_name -> _preview_generate_name và
-# compute_row_values -> _compute_row_progression để GIỮ NGUYÊN toàn bộ các chỗ
-# gọi hàm đã có sẵn trong UI (đúng docstring đầu file: "thay _preview_generate_name
-# bằng lời gọi rename_engine.py thật, giữ nguyên phần UI").
 from src.rename_engine import (
     ProfileStoreError,
     load_profiles,
@@ -109,11 +75,11 @@ from src.rename_engine import (
 )
 
 # ----------------------------------------------------------------------
-# Hằng số nghiệp vụ (xem 08_dac_ta_doi_ten.md)
+# Hằng số nghiệp vụ 
 # ----------------------------------------------------------------------
 _MAX_BLOCKS = 4
 _MIN_CA_COUNT, _MAX_CA_COUNT = 1, 10
-_DEFAULT_CA_COUNT = 3  # GỢI Ý — CẦN ĐẠI CA CHỐT (08_dac_ta_doi_ten.md mục 8)
+_DEFAULT_CA_COUNT = 3  
 
 _BLOCK_TYPE_LABELS = {
     "fixed_text": "Văn bản cố định",
@@ -134,9 +100,7 @@ _DROP_INDICATOR_HEIGHT = 4
 _DROP_INDICATOR_DOT_SIZE = 10
 _DROP_DEADZONE_RATIO = 0.20
 
-# Cột B — Trang Preview: hằng số cho dải thumbnail trái + khung cuộn lớn bên
-# phải + Zoom, ĐÚNG như merge_widget.py (chỉ khác _BADGE_SIZE đã dùng cho badge
-# thứ tự ở Cột A nên đặt tên riêng _THUMB_BADGE_SIZE để tránh đụng nhau).
+# Cột B — Trang Preview: 
 _THUMB_RENDER_WIDTH = 220
 _DETAIL_RENDER_WIDTH = 1200
 _THUMB_STRIP_WIDTH = 115
@@ -174,8 +138,6 @@ _SCROLLBAR_QSS = f"""
     }}
 """
 
-# Tên file JSON lưu hồ sơ — GỢI Ý, đặt cạnh config.json (chưa đọc/ghi thật ở bước
-# này, chỉ tạo rỗng nếu chưa có, xem 08_dac_ta_doi_ten.md mục 2 và mục 8).
 RENAME_PROFILES_FILE = "rename_profiles.json"
 
 
@@ -186,8 +148,6 @@ def _format_file_size(num_bytes: int) -> str:
 
 
 def _parse_size_to_mb(size_text: str) -> float:
-    """Đổi ngược chuỗi hiển thị dung lượng ("2.4 MB"/"956 KB") ra số MB để so
-    sánh khi Sắp xếp theo Dung lượng — y hệt merge_widget.py."""
     try:
         value_str, unit = size_text.strip().split()
         value = float(value_str)
@@ -195,13 +155,10 @@ def _parse_size_to_mb(size_text: str) -> float:
     except (ValueError, AttributeError):
         return 0.0
 
-
 def _new_profile_id() -> str:
     return uuid.uuid4().hex[:8]
 
-
 def _default_block(block_type: str) -> dict:
-    """Cấu hình mặc định cho 1 khối mới thêm trong hồ sơ Phát sinh (mục 4)."""
     if block_type == "fixed_text":
         return {"type": "fixed_text", "config": {"value": ""}}
     if block_type == "auto_number":
@@ -216,7 +173,6 @@ def _profile_type_label(profile_type: str) -> str:
 
 
 def _zoom_button_style() -> str:
-    """Style cho 2 nút Zoom In/Out ở header Cột B — đồng bộ với merge_widget.py."""
     return f"""
         QToolButton {{
             background-color: white;
@@ -236,11 +192,8 @@ def _zoom_button_style() -> str:
         }}
         """
 
-
 def _checkbox_qss() -> str:
-    """Style tường minh cho QCheckBox — bắt buộc phải có vì mặc định indicator
-    của checkbox lấy màu theo palette hệ điều hành, trên máy đang bật dark mode
-    có thể vẽ ra màu trắng-trên-trắng khiến ô tick gần như vô hình."""
+
     return f"""
         QCheckBox {{
             color: {COLOR_TEXT_PRIMARY};
@@ -267,8 +220,7 @@ def _checkbox_qss() -> str:
 
 
 def _outline_button_style() -> str:
-    """Style nút phụ (viền xám, nền trắng) — dùng cho các nút Hủy/Quay lại/Đổi
-    tên khác trong dialog xử lý trùng tên (_RenameConflictDialog)."""
+
     return f"""
         QPushButton {{
             background-color: white; color: {COLOR_TEXT_PRIMARY};
@@ -280,8 +232,7 @@ def _outline_button_style() -> str:
 
 
 def _accent_button_style() -> str:
-    """Style nút chính (nền cam Accent) — dùng cho nút hành động chính trong
-    dialog xử lý trùng tên (_RenameConflictDialog)."""
+
     return f"""
         QPushButton {{
             background-color: {COLOR_ACCENT}; color: white; border: none;
@@ -355,7 +306,7 @@ def _styled_line_edit(placeholder: str = "") -> QLineEdit:
 
 
 # ----------------------------------------------------------------------
-# Khối chọn file (tái sử dụng phong cách DropZone của merge_widget.py)
+# Khối chọn file 
 # ----------------------------------------------------------------------
 class _DropZone(QFrame):
     files_selected = Signal(list)
@@ -457,7 +408,7 @@ class _DropZone(QFrame):
 
 
 # ----------------------------------------------------------------------
-# Danh sách file kéo-thả (tái sử dụng nguyên cơ chế vạch chỉ thị của merge_widget.py)
+# Danh sách file kéo-thả
 # ----------------------------------------------------------------------
 class _DraggableFileList(QListWidget):
     row_drag_dropped = Signal(int, int)
@@ -558,7 +509,6 @@ class _DraggableFileList(QListWidget):
             return self.visualItemRect(self.item(count - 1)).bottom()
         return self.visualItemRect(self.item(index)).top()
 
-
 class _DragHandle(QLabel):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -570,9 +520,6 @@ class _DragHandle(QLabel):
 
 
 class _OrderBadge(QLabel):
-    """Số thứ tự vị trí file trong danh sách — vì thứ tự này quyết định trực tiếp
-    Ngày/Ca/Số thứ tự tự tăng sinh ra (08_dac_ta_doi_ten.md mục 3, 4), cần hiển thị
-    rõ ràng ngay trên mỗi dòng, không chỉ dựa vào vị trí trực quan trong danh sách."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -674,8 +621,6 @@ class _FileRow(QFrame):
         self.order_badge.set_order(order)
 
     def set_locked(self, locked: bool) -> None:
-        """Khóa Cột A (08_dac_ta_doi_ten.md bảng 6.1): ẩn tay cầm kéo-thả + nút
-        xóa, đổi con trỏ chuột — nhưng VẪN click trái được để xem preview."""
         self.is_locked = locked
         self.drag_handle.setVisible(not locked)
         self.delete_btn.setVisible(not locked)
@@ -755,14 +700,8 @@ class _FileRow(QFrame):
 
         super().mouseReleaseEvent(event)
 
-
 # ----------------------------------------------------------------------
-# Cột B — Trang "Preview": ĐÚNG như cách hiển thị Cột B của merge_widget.py —
-# dải thumbnail trái ("mục lục" nhảy nhanh) + khung cuộn lớn bên phải xem toàn
-# bộ trang liên tục (kéo chuột trái để pan khi đã zoom), có Zoom In/Out ở
-# header, ảnh render nền qua QThread không chặn UI. Khác biệt duy nhất so với
-# Gộp file: Cột B ở đây luôn xem đúng 1 file đang chọn ở Cột A (không có khái
-# niệm gộp nhiều file).
+# Cột B — Trang "Preview"
 # ----------------------------------------------------------------------
 class _PreviewThumb(QFrame):
     clicked = Signal(int)
@@ -825,8 +764,6 @@ class _PreviewThumb(QFrame):
 
 
 class _PannablePreviewScrollArea(QScrollArea):
-    """Cuộn chuột bình thường + kéo chuột trái để pan khi nội dung vượt khung —
-    đồng bộ với merge_widget.py/split_widget.py."""
 
     viewport_resized = Signal()
 
@@ -878,7 +815,6 @@ class _PannablePreviewScrollArea(QScrollArea):
 
 
 class _PreviewPageFrame(QFrame):
-    """1 khung trang trong khung cuộn lớn bên phải — hiển thị ảnh trang thật."""
 
     def __init__(self, page_number: int, aspect_ratio: float, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1150,7 +1086,7 @@ class _PreviewPage(QWidget):
 
         self._update_zoom_buttons_state()
 
-    # ------------------------------------------------------------------ render nền
+    # ------------------------------------------------------------------
     def _cancel_active_render(self) -> None:
         if self._render_worker is not None:
             self._render_worker.cancel()
@@ -1210,7 +1146,7 @@ class _PreviewPage(QWidget):
         if current_frame is not None:
             self.preview_scroll_b.ensureWidgetVisible(current_frame, 0, 0)
 
-    # ------------------------------------------------------------------ zoom
+    # ----------------------------------------------------------------
     def _fit_base_width(self) -> int:
         viewport_width = self.preview_scroll_b.viewport().width()
         usable = viewport_width - (_PREVIEW_SIDE_MARGIN * 2)
@@ -1272,11 +1208,6 @@ class _PreviewPage(QWidget):
             self._current_preview_width = None
             self._apply_preview_zoom()
 
-
-# ----------------------------------------------------------------------
-# Khung nhãn dạng "badge" + control nhập liệu — đúng theo giao diện phiên bản
-# cũ đại ca đang dùng (ảnh "Trung tâm điều khiển - OPC" / "Điểm phát - TX"):
-# mỗi hàng có 1 nhãn nổi bật màu Accent bên trái, control nhập bên phải.
 # ----------------------------------------------------------------------
 class _LabeledFieldRow(QWidget):
     def __init__(self, label_text: str, control: QWidget, parent: QWidget | None = None) -> None:
@@ -1336,8 +1267,7 @@ class _SplitDateInput(QWidget):
 
 
 # ----------------------------------------------------------------------
-# Cột B — Trang "Form nhập liệu" (đổi theo đúng hồ sơ đang chọn, mục 6.2 +
-# giao diện tham khảo phiên bản cũ đại ca gửi cho phần Vận hành)
+# Cột B — Trang "Form nhập liệu"
 # ----------------------------------------------------------------------
 class _RenameFormPage(QWidget):
     values_changed = Signal()
@@ -1369,8 +1299,7 @@ class _RenameFormPage(QWidget):
 
         self.root_layout.addStretch()
 
-        # Khung "Xem trước tên file" — KHÔNG dùng viền cam (đã bỏ theo yêu cầu),
-        # chỉ tô nền xám nhạt cho dễ phân biệt với các trường nhập liệu ở trên.
+        # Khung "Xem trước tên file"
         preview_box = QFrame()
         preview_box.setStyleSheet(
             f"QFrame {{ background-color: {_PILL_BG}; border: none; border-radius: 10px; }}"
@@ -1426,8 +1355,6 @@ class _RenameFormPage(QWidget):
                 self._ca_combo.currentIndexChanged.connect(self._emit_changed)
                 self.fields_layout.addWidget(_LabeledFieldRow("Ca bắt đầu", self._ca_combo))
 
-            # Hiển thị lại "Thành phần cố định" đã cấu hình sẵn ở hồ sơ (chỉ để
-            # xem, không sửa được ở đây) — đúng theo ảnh giao diện cũ đại ca gửi.
             fixed_text_display = _styled_line_edit()
             fixed_text_display.setText(profile.get("fixed_text", ""))
             fixed_text_display.setReadOnly(True)
@@ -1451,7 +1378,6 @@ class _RenameFormPage(QWidget):
                     self._manual_sample_edit = _styled_line_edit("VD: giá trị mẫu cho file đầu tiên")
                     self._manual_sample_edit.textChanged.connect(self._emit_changed)
                     self.fields_layout.addWidget(_LabeledFieldRow("Nhập tay (mẫu xem trước)", self._manual_sample_edit))
-                # "fixed_text": không cần trường trong form (đã cấu hình sẵn ở hồ sơ, đúng mục 6.2 CHỐT).
 
         self._emit_changed()
 
@@ -1537,9 +1463,6 @@ class _SegmentedToggle(QWidget):
         for btn in self._buttons.values():
             btn.setEnabled(not locked)
 
-
-# ----------------------------------------------------------------------
-# 1 dòng cấu hình khối trong hồ sơ "Phát sinh" (mục 4, 6.4)
 # ----------------------------------------------------------------------
 class _PhatSinhBlockRow(QFrame):
     changed = Signal()
@@ -1664,9 +1587,6 @@ class _PhatSinhBlockRow(QFrame):
         self.up_btn.setEnabled(can_up)
         self.down_btn.setEnabled(can_down)
 
-
-# ----------------------------------------------------------------------
-# Dialog Tạo/Sửa hồ sơ mẫu (mục 5.1, 5.2, 6.4)
 # ----------------------------------------------------------------------
 class _ProfileFormDialog(QDialog):
     def __init__(
@@ -1677,7 +1597,7 @@ class _ProfileFormDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.is_edit_mode = profile is not None
-        self._existing_names = existing_names  # đã loại tên của chính hồ sơ đang sửa
+        self._existing_names = existing_names  
         self._result_profile: Optional[dict] = None
         self._blocks_rows: List[_PhatSinhBlockRow] = []
 
@@ -1764,8 +1684,6 @@ class _ProfileFormDialog(QDialog):
 
         root.addWidget(self.phat_sinh_page)
 
-        # ---- Dòng preview mẫu (CHỐT, bắt buộc — mục 5.1) — KHÔNG dùng viền
-        # cam (đã bỏ theo yêu cầu), chỉ tô nền xám nhạt. ----
         preview_box = QFrame()
         preview_box.setStyleSheet(
             f"QFrame {{ background-color: {_PILL_BG}; border: none; border-radius: 10px; }}"
@@ -1824,7 +1742,7 @@ class _ProfileFormDialog(QDialog):
         if profile is not None:
             self.name_edit.setText(profile["name"])
             self.type_toggle.set_value(profile["type"])
-            self.type_toggle.set_locked(True)  # CHỐT — không cho đổi Loại khi Sửa
+            self.type_toggle.set_locked(True)  
             if profile["type"] == "van_hanh":
                 self.has_ca_checkbox.setChecked(profile.get("has_ca", False))
                 self.ca_count_spin.setValue(profile.get("ca_count", _DEFAULT_CA_COUNT))
@@ -1940,9 +1858,6 @@ class _ProfileFormDialog(QDialog):
     def get_profile(self) -> Optional[dict]:
         return self._result_profile
 
-
-# ----------------------------------------------------------------------
-# Dialog xác nhận xóa hồ sơ (mục 5.3) — tự vẽ, đồng bộ style nền trắng/chữ tối/Accent
 # ----------------------------------------------------------------------
 class _ConfirmDeleteProfileDialog(QDialog):
     def __init__(self, profile_name: str, parent: QWidget | None = None) -> None:
@@ -1994,16 +1909,13 @@ class _ConfirmDeleteProfileDialog(QDialog):
 
         layout.addLayout(button_row)
 
-
-# ----------------------------------------------------------------------
-# Dialog "Quản lý biểu mẫu" (mục 5.4, 6.5)
 # ----------------------------------------------------------------------
 class _ManageProfilesDialog(QDialog):
     profiles_changed = Signal()
 
     def __init__(self, profiles: List[dict], parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.profiles = profiles  # tham chiếu trực tiếp danh sách của widget cha
+        self.profiles = profiles  
         self.setWindowTitle("Quản lý biểu mẫu")
         self.setMinimumSize(420, 380)
         self.setStyleSheet(f"QDialog {{ background-color: white; }} QLabel {{ color: {COLOR_TEXT_PRIMARY}; }}")
@@ -2087,7 +1999,7 @@ class _ManageProfilesDialog(QDialog):
         dialog = _ProfileFormDialog(other_names, profile=copy.deepcopy(profile), parent=self)
         if dialog.exec() == QDialog.Accepted:
             updated = dialog.get_profile()
-            updated["id"] = profile["id"]  # giữ nguyên id — ghi đè đúng bản ghi cũ
+            updated["id"] = profile["id"]  
             index = self.profiles.index(profile)
             self.profiles[index] = updated
             self._reload_list()
@@ -2106,23 +2018,9 @@ class _ManageProfilesDialog(QDialog):
 
 
 # ----------------------------------------------------------------------
-# Dialog xử lý trùng tên khi Đổi tên hàng loạt (02_dac_ta_tinh_nang.md mục 8):
-# Ghi đè / Đổi tên khác / Hủy. Tự vẽ nền trắng/chữ tối/nút Accent, đồng bộ
-# style chung của app (01_dac_ta_giao_dien.md mục 3).
+# Dialog xử lý trùng tên khi Đổi tên hàng loạt
 # ----------------------------------------------------------------------
 class _RenameConflictDialog(QDialog):
-    """1 dialog, 2 trang (QWidget con ẩn/hiện, không dùng QStackedWidget vì
-    dialog nhỏ, không cần giữ kích thước cố định giữa 2 trang):
-
-    - Trang 1 (mặc định): thông báo trùng tên + 3 nút Hủy / Đổi tên khác /
-      Ghi đè. Khi `disallow_overwrite=True` (tên mới trùng ĐÚNG file gốc đang
-      đổi tên) — ẩn hẳn nút Ghi đè để không bao giờ phá hủy file gốc, đúng quy
-      ước chung 02_dac_ta_tinh_nang.md mục 0.
-    - Trang 2: ô nhập tên khác, gợi ý sẵn `<tên>_2.pdf`.
-
-    Kết quả đọc qua 2 thuộc tính sau khi `exec()` xong: `self.action`
-    (ConflictAction.OVERWRITE/RENAME/CANCEL) và `self.new_name` (chỉ có giá
-    trị khi action = RENAME)."""
 
     def __init__(self, current_name: str, disallow_overwrite: bool, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -2245,12 +2143,12 @@ class _RenameConflictDialog(QDialog):
 
 
 # ----------------------------------------------------------------------
-# Dialog xem trước Tên cũ → Tên mới trước khi "Đổi tên" thật (mục 0, 6.1)
+# Dialog xem trước Tên cũ 
 # ----------------------------------------------------------------------
 class _RenamePreviewDialog(QDialog):
     def __init__(
         self,
-        files: List[Tuple[str, str]],  # (path, current_name), đúng thứ tự Cột A
+        files: List[Tuple[str, str]],  
         profile: dict,
         base_values: dict,
         parent: QWidget | None = None,
@@ -2309,7 +2207,7 @@ class _RenamePreviewDialog(QDialog):
         self._has_manual_block = has_manual_block
         self._fill_table()
 
-        # ---- Chọn thư mục lưu (theo quy ước chung mục 0 — không ghi đè gốc) ----
+        # ---- Chọn thư mục lưu ----
         dir_row = QHBoxLayout()
         dir_label = QLabel("Thư mục lưu kết quả")
         dir_label.setStyleSheet(f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; font-weight: 700; background: transparent;")
@@ -2410,9 +2308,6 @@ class _RenamePreviewDialog(QDialog):
             self.dir_edit.setText(directory)
 
     def _current_new_names(self) -> List[str]:
-        """Tính lại đúng danh sách tên file mới cho toàn batch, khớp 1:1 với
-        những gì đang hiển thị trên bảng (kể cả các ô đã sửa tay ở cột "Giá trị
-        nhập tay")."""
         batch_size = len(self.files)
         names: List[str] = []
         for row_index in range(batch_size):
@@ -2427,12 +2322,6 @@ class _RenamePreviewDialog(QDialog):
             return
 
         new_names = self._current_new_names()
-
-        # An toàn bổ sung: phát hiện trùng tên NGAY TRONG batch (VD gõ tay ô
-        # "Nhập tay" giống nhau ở 2 file khác nhau) TRƯỚC khi đụng vào đĩa —
-        # tránh 1 file mới ghi đè lên đúng file mới vừa tạo ở lượt trước mà
-        # không hỏi gì (khác hẳn bản chất "trùng tên với file có sẵn trên đĩa"
-        # ở mục 8 — đây là lỗi dữ liệu đầu vào, cần sửa lại giá trị nhập tay).
         seen: Dict[str, int] = {}
         for name in new_names:
             seen[name] = seen.get(name, 0) + 1
@@ -2462,9 +2351,6 @@ class _RenamePreviewDialog(QDialog):
 
         self._show_result_summary(result)
 
-        # GỢI Ý ĐÃ CHỐT: tự động mở thư mục kết quả sau khi đổi tên xong,
-        # đồng bộ hành vi với Tách file/Chèn file/Edit — chỉ mở khi có ít nhất
-        # 1 file ghi thành công (tránh mở thư mục rỗng khi Hủy ngay từ file đầu).
         if result.success_count > 0:
             QDesktopServices.openUrl(QUrl.fromLocalFile(self._output_dir))
 
@@ -2510,11 +2396,6 @@ class RenameFeatureWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
-        # Hồ sơ mẫu — đọc thật từ rename_profiles.json (cùng cấp config.json và
-        # thư mục src, xem RENAME_PROFILES_FILE), tự tạo file rỗng "[]" nếu
-        # chưa có (08_dac_ta_doi_ten.md mục 2). Lỗi đọc (nếu có) chỉ hiện ra
-        # SAU khi UI đã dựng xong (xem cuối __init__), vì result_label chưa
-        # tồn tại ở thời điểm này.
         self._profile_load_error: Optional[str] = None
         self._profiles: List[dict] = self._load_profiles()
         self._selected_profile_id: Optional[str] = None
@@ -2541,9 +2422,6 @@ class RenameFeatureWidget(QWidget):
         list_card_layout.setContentsMargins(18, 14, 18, 10)
         list_card_layout.setSpacing(8)
 
-        # Hàng tiêu đề đặt trong 1 container cao CỐ ĐỊNH — không phụ thuộc nội
-        # dung bên dưới rỗng hay có file, để không bao giờ bị đẩy lệch vị trí
-        # (đúng nguyên tắc "khung tiêu đề cố định" ở 01_dac_ta_giao_dien.md mục 3).
         list_header_container = QWidget()
         list_header_container.setFixedHeight(26)
         list_header = QHBoxLayout(list_header_container)
@@ -2563,11 +2441,7 @@ class RenameFeatureWidget(QWidget):
         list_header.addWidget(self.list_count_label)
         list_header.addStretch()
 
-        # Nút + menu "Sắp xếp" — bố cục/thiết kế y hệt merge_widget.py (đặt sau
-        # addStretch, trước phần badge trạng thái bên phải). Đặt fixedHeight(22)
-        # (khác merge_widget.py không set) vì header của rename_widget.py dùng
-        # container cao cố định 26px — cần khớp cùng chiều cao với lock_badge
-        # bên cạnh để không bị lệch/tràn khung, không đổi gì về vị trí/kiểu dáng.
+        # Nút + menu "Sắp xếp"
         self.sort_button = QToolButton()
         self.sort_button.setText(" Sắp xếp")
         self.sort_button.setIcon(qta.icon("mdi6.sort", color=COLOR_TEXT_PRIMARY))
@@ -2614,9 +2488,6 @@ class RenameFeatureWidget(QWidget):
 
         list_card_layout.addWidget(list_header_container)
 
-        # Thân danh sách: QStackedWidget 2 trang (rỗng / có file) — đúng khuyến
-        # nghị 01_dac_ta_giao_dien.md mục 3, thay cho ẩn/hiện bằng setVisible()
-        # (cách cũ khiến hàng tiêu đề bị kéo giãn lệch vị trí khi danh sách rỗng).
         self.list_body_stack = QStackedWidget()
 
         empty_page = QWidget()
@@ -2686,9 +2557,7 @@ class RenameFeatureWidget(QWidget):
         self.rename_button.setCursor(Qt.PointingHandCursor)
         self.rename_button.setFixedHeight(CONTROL_HEIGHT)
         self.rename_button.setMinimumWidth(120)
-        # Luôn nền cam/chữ trắng (không làm mờ/xám khi thiếu điều kiện) — bấm
-        # vào lúc thiếu điều kiện sẽ báo rõ lý do qua result_label thay vì chặn
-        # bằng cách disable nút.
+
         self.rename_button.setStyleSheet(
             f"""
             QPushButton {{
@@ -2748,22 +2617,16 @@ class RenameFeatureWidget(QWidget):
         self._rebuild_create_profile_menu()
         self._update_rename_button_state()
 
-        # Hiện lỗi đọc rename_profiles.json (nếu có) — đặt cuối cùng vì
-        # result_label chỉ vừa được tạo xong ở trên.
         if self._profile_load_error:
             self._show_error(self._profile_load_error)
 
     # ------------------------------------------------------------------
-    # Hồ sơ mẫu (đọc/ghi thật rename_profiles.json — 08_dac_ta_doi_ten.md mục 2)
+    # Hồ sơ mẫu 
     # ------------------------------------------------------------------
     def _load_profiles(self) -> List[dict]:
         try:
             return load_profiles(RENAME_PROFILES_FILE)
         except ProfileStoreError as exc:
-            # Không chặn mở tính năng nếu file hồ sơ cũ bị hỏng — chỉ báo lỗi,
-            # danh sách hồ sơ coi như rỗng cho phiên làm việc này. File hỏng
-            # KHÔNG bị tự động xóa/ghi đè (xem rename_engine.load_profiles) —
-            # chỉ bị ghi đè nếu đại ca tạo/sửa/xóa 1 hồ sơ bất kỳ sau đó.
             self._profile_load_error = (
                 f"Không đọc được file hồ sơ mẫu đã lưu trước đó ({exc}). "
                 "Danh sách hồ sơ đang trống — tạo/sửa một hồ sơ bất kỳ sẽ ghi đè lại file này."
@@ -2795,9 +2658,6 @@ class RenameFeatureWidget(QWidget):
             f"QMenu::separator {{ height: 1px; background: {COLOR_BORDER}; margin: 4px 8px; }}"
         )
 
-        # Chỉ hiện khi đang áp dụng 1 hồ sơ (Cột A đang khóa) — cho phép người
-        # dùng mở khóa lại danh sách file mà KHÔNG mất file đã chọn (khác Clear,
-        # vốn xóa sạch toàn bộ danh sách).
         if self._selected_profile_id is not None:
             menu.addAction(
                 qta.icon("mdi6.arrow-left", color=COLOR_TEXT_PRIMARY), "Quay lại chọn file",
@@ -2837,11 +2697,9 @@ class RenameFeatureWidget(QWidget):
         self._rebuild_create_profile_menu()
 
     def _on_profiles_changed_in_manage_dialog(self) -> None:
-        # Ghi lại rename_profiles.json — dialog Quản lý sửa TRỰC TIẾP trên cùng
-        # 1 list self._profiles (tham chiếu, xem docstring _ManageProfilesDialog)
-        # nên chỉ cần lưu lại ở đây, dùng chung cho cả 2 trường hợp Sửa và Xóa.
+
         self._save_profiles()
-        # Nếu hồ sơ đang áp dụng bị sửa/xóa trong dialog Quản lý, đồng bộ lại Cột B.
+
         if self._selected_profile_id is not None:
             current = next((p for p in self._profiles if p["id"] == self._selected_profile_id), None)
             if current is None:
@@ -2859,8 +2717,7 @@ class RenameFeatureWidget(QWidget):
         self._rebuild_create_profile_menu()
 
     def _on_back_to_file_selection(self) -> None:
-        """Mở khóa lại Cột A để chỉnh sửa danh sách file, GIỮ NGUYÊN các file
-        đã chọn (khác "Clear" — xóa sạch toàn bộ danh sách)."""
+
         self._selected_profile_id = None
         self._set_locked(False)
         self.form_page.set_profile(None)
@@ -2888,7 +2745,7 @@ class RenameFeatureWidget(QWidget):
                 row.set_locked(locked)
 
     # ------------------------------------------------------------------
-    # Quản lý danh sách file (Cột A) — cùng cơ chế với merge_widget.py
+    # Quản lý danh sách file (Cột A)
     # ------------------------------------------------------------------
     def _add_file_row(
         self, path: str, name: str, size_text: str, pages: int, index: Optional[int] = None
@@ -2976,11 +2833,7 @@ class RenameFeatureWidget(QWidget):
         self.list_body_stack.setCurrentIndex(1 if count > 0 else 0)
 
     def _sort_files(self, key: str) -> None:
-        # Chặn khi Cột A đang khóa (đã chọn hồ sơ mẫu) — đúng bảng 6.1
-        # (08_dac_ta_doi_ten.md): không thêm/xóa/kéo-thả/đổi thứ tự dưới bất kỳ
-        # hình thức nào cho tới khi bấm "Clear". Thứ tự Cột A quyết định thứ tự
-        # sinh Ngày/Ca/Số thứ tự tự tăng nên Sắp xếp cũng phải tuân theo khóa này
-        # (khác merge_widget.py — Gộp file không có khái niệm khóa danh sách).
+
         if self._is_locked:
             return
 
@@ -3002,8 +2855,6 @@ class RenameFeatureWidget(QWidget):
         elif key == "pages":
             rows_data.sort(key=lambda r: r[3], reverse=True)
 
-        # Dùng path (không dùng name) để chọn lại đúng file sau khi sắp xếp —
-        # tránh nhầm khi 2 file trùng tên nhưng khác thư mục nguồn.
         selected_path = self._selected_row.path if self._selected_row else None
         self.file_list.clear()
         self._selected_row = None
@@ -3069,9 +2920,6 @@ class RenameFeatureWidget(QWidget):
             self._selected_row.set_selected(False)
         row.set_selected(True)
         self._selected_row = row
-        # Cột B chỉ đổi trang khi CHỌN/BỎ CHỌN hồ sơ (đúng bảng 6.1), không phải
-        # khi đổi file đang xem — nên chỉ cần nạp preview khi trang Preview đang
-        # hiển thị (lúc chưa khóa Cột A bằng hồ sơ nào).
         if self.stack.currentWidget() is self.preview_page:
             self.preview_page.show_file(row.path)
 
@@ -3087,8 +2935,6 @@ class RenameFeatureWidget(QWidget):
         self._update_rename_button_state()
 
     def _update_rename_button_state(self) -> None:
-        # Nút "Đổi tên" luôn giữ nền cam/chữ trắng (không disable) — điều kiện
-        # thiếu sót sẽ được báo cụ thể ngay khi bấm, xem _on_rename_clicked.
         self.rename_button.setEnabled(True)
 
     def _on_rename_clicked(self) -> None:

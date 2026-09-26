@@ -1,68 +1,5 @@
 """
-Giao diện tính năng Chèn Watermark (WatermarkFeatureWidget) — Vishipel PDF Tools.
-
-Đã nối logic thật (phiên làm việc nối Watermark — xem 05_lo_trinh_phat_trien.md):
-1. Validate file đầu vào ngay lúc chọn (`pdf_core.list_page_infos`) — bắt file hỏng/có
-   mật khẩu, báo lỗi qua `result_label`, không cho vào xử lý (đúng mục 8 02_...md).
-2. Cột B (preview lớn) và dải thumbnail (Cột A) giờ render ẢNH TRANG PDF THẬT qua
-   `pdf_core.PageRenderer` (dùng chung với Split/Insert/Edit) làm nền, thay cho nội
-   dung giả lập (đường kẻ xám) trước đây — watermark vẫn được vẽ mô phỏng đè lên trên
-   theo cấu hình hiện tại để xem trước động, không cần ghi file thật mới xem được.
-3. Nút "Chèn Watermark" gọi thật `pdf_core.apply_watermark_to_pdf` với
-   `TextWatermarkConfig`/`ImageWatermarkConfig` dựng từ giá trị control hiện tại, có
-   dialog chọn nơi lưu (Save As, tên gợi ý mặc định `<tên gốc>_Watermark.pdf`), dialog
-   xác nhận trùng tên tự vẽ riêng `_OverwriteConfirmDialog` (Ghi đè/Đổi tên khác/Hủy,
-   đồng bộ style ảnh đại ca gửi — nền trắng/chữ tối/nút Accent), ghi log qua
-   `src/logger.py`, và tự mở thư mục kết quả sau khi lưu (giống Tách/Gộp/Chèn/Edit).
-
-Các vấn đề UI đã fix từ trước (giữ nguyên):
-1. Chỉnh màu chữ trong bảng chọn màu QColorDialog thành màu đen rõ nét.
-2. Bỏ khung bao ngoài cho giao diện Text (Text, Font size, Color nằm ngoài khung).
-3. Bỏ khung bao ngoài cho giao diện Image (tách riêng phần chọn ảnh & Scale).
-4. Bỏ 2 nút mũi tên lên/xuống ở các ô nhập %, chỉ giữ lại ô nhập số thuần túy.
-5. Bỏ nền xám mặc định còn sót lại ở 2 trang con của config_stack (Text/Image) —
-   QWidget trần trước đó không có stylesheet riêng nên bị dính theme nền xám của app;
-   đã ép transparent tường minh cho config_stack, text_config_widget, image_config_widget,
-   đồng thời nới margin/spacing để bù lại khoảng thở sau khi bỏ khung.
-
-Tồn đọng không bắt buộc (giống Edit — xem 05_lo_trinh_phat_trien.md): render ảnh preview
-(thumbnail + trang lớn) hiện chạy đồng bộ trên UI thread, chưa dùng QThread — có thể cân
-nhắc chuyển sau nếu file nhiều trang gây giật UI lúc chọn file/đổi zoom.
-
-Fix bổ sung (đại ca yêu cầu đảo ngược quyết định Tiling toàn trang ở
-02_dac_ta_tinh_nang.md mục 7.3, quay lại phương án "1 dấu lớn duy nhất giữa trang" để
-tiết kiệm tài nguyên tính toán/vẽ):
-- `pdf_core.py`: `draw_text_watermark_tiled`/`draw_image_watermark_tiled` (+ helper
-  `_tile_positions`) đã được thay bằng `draw_text_watermark_centered`/
-  `draw_image_watermark_centered` — chỉ vẽ 1 lần duy nhất tại giữa mỗi trang.
-- `watermark_widget.py` (file này): preview Cột B quay lại vẽ 1 bản watermark lớn giữa
-  trang (khớp WYSIWYG với hàm centered mới).
-
-Fix đồng bộ kích thước/nét chữ Preview ↔ File thật (phát hiện qua ảnh chụp thực tế của
-đại ca — preview to/đậm hơn rõ rệt so với file xuất ra):
-1. `_WatermarkPreviewPage` giờ nhận thêm `page_width_points` (chiều rộng THẬT của trang
-   tính bằng points, lấy từ `PageInfo`) và dùng đúng tỷ lệ `w / page_width_points` để
-   quy đổi point -> pixel khi vẽ font size/scale ảnh — trước đây dùng nhầm hằng số cố
-   định `_PREVIEW_PAGE_WIDTH_FALLBACK` (340) làm mẫu số, sai lệch hẳn so với chiều rộng
-   thật của trang PDF (VD A4 ~595pt), khiến watermark trên preview to hơn hẳn thật.
-2. Bỏ `QFont.Bold` ép cứng trên preview — đổi thành `QFont.Normal` để khớp đúng nét chữ
-   Regular của font Segoe UI thật (`segoeui.ttf`) mà `pdf_core.py` dùng khi xuất file.
-3. Font size đổi từ QSpinBox sang **QComboBox editable** (48-99): vừa xổ list các mốc có
-   sẵn (48/54/60/66/72/78/84/90/96/99), vừa gõ tay số tự do, có `QIntValidator` chặn
-   nhập ngoài khoảng và tự chỉnh lại khi rời khỏi ô nếu gõ giá trị không hợp lệ.
-
-Fix khoảng cách dải thumbnail bị giãn bất thường khi file ít trang (đại ca báo qua ảnh
-chụp thực tế): đã dựng lại đúng layout bằng PySide6 thật (kể cả trên X server thật qua
-Xvfb, không chỉ offscreen, để loại trừ khả năng giả do môi trường test) để cô lập nguyên
-nhân — `_PreviewThumb` có layout nội bộ (badge_row + image_label stretch=1) khiến
-`sizeHint()` mặc định trả về giá trị RẤT NHỎ (~28x44) dù đã `setFixedSize(72,94)`, làm
-widget cha (`wrapper` bọc thumb+số trang trong `_build_preview_thumbs`) tính sai kích
-thước và bị Qt cấp dư không gian khi còn trống chỗ (file ít trang) — biểu hiện thành
-khoảng cách giữa các thumbnail giãn ra hàng trăm px. Đã sửa 2 chỗ: (1) `_PreviewThumb`
-ghi đè `sizeHint()`/`minimumSizeHint()` trả đúng kích thước cố định; (2) mỗi `wrapper`
-trong `_build_preview_thumbs` được ép `setSizePolicy(Preferred, Fixed)` theo chiều dọc
-để không co giãn dù `addStretch()` ở cuối `thumb_layout` không tự hấp thụ hết 100%
-khoảng trống trong trường hợp này.
+/src/ui/tools/watermark_widget.py
 """
 from __future__ import annotations
 
@@ -149,8 +86,7 @@ _PREVIEW_PAGE_WIDTH_FALLBACK = 340
 _PREVIEW_PAGE_HEIGHT_DEFAULT = 460
 
 _DEFAULT_OUTPUT_SUFFIX = "_Watermark"
-"""Tên file gợi ý mặc định khi lưu kết quả: <tên file gốc>_Watermark.pdf (đại ca đã xác
-nhận — 02_dac_ta_tinh_nang.md mục 7 trước đó chưa nêu cụ thể tên mặc định)."""
+
 
 _LABEL_STYLE = f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; font-weight: 700; background: transparent; border: none;"
 
@@ -355,8 +291,6 @@ class _SegmentedControl(QFrame):
 # Cột B — Các thành phần Preview
 # ----------------------------------------------------------------------
 class _PreviewThumb(QFrame):
-    """Ô thumbnail dải bên trái — nay hiển thị ẢNH TRANG PDF THẬT (render qua
-    `PageRenderer.render_thumbnail`, dùng chung với Split/Edit) thay vì khung trống."""
 
     clicked = Signal(int)
 
@@ -387,14 +321,6 @@ class _PreviewThumb(QFrame):
         self._apply_style()
 
     def sizeHint(self) -> QSize:
-        # QFrame có layout nội bộ (badge_row + image_label với stretch=1) khiến
-        # sizeHint() mặc định tính theo NỘI DUNG layout (rất nhỏ, ví dụ ~28x44) thay vì
-        # đúng kích thước cố định đã setFixedSize (72x94). Widget cha (`wrapper` trong
-        # _build_preview_thumbs) dựa vào sizeHint() này để tính khoảng cách/kích thước
-        # khi xếp nhiều thumbnail dọc — sizeHint sai khiến Qt cấp dư không gian cho các
-        # phần tử lân cận (VD label số trang bị kéo giãn ra hàng trăm px), gây khoảng
-        # cách giữa các thumbnail bị giãn bất thường khi file ít trang. Ghi đè trả đúng
-        # kích thước cố định để khớp với maximumSize()/setFixedSize() đã đặt.
         return QSize(_THUMB_W, _THUMB_H)
 
     def minimumSizeHint(self) -> QSize:
@@ -485,22 +411,6 @@ class _PannablePreviewScrollArea(QScrollArea):
 
 
 class _WatermarkPreviewPage(QFrame):
-    """Trang xem trước: vẽ ẢNH TRANG PDF THẬT (render qua
-    `PageRenderer.render_page_detail`, dùng chung với Split/Insert/Edit) làm nền, rồi vẽ
-    mô phỏng Watermark động đè lên trên theo cấu hình hiện tại — thay cho bản demo trước
-    đây chỉ vẽ nền trắng giả lập + nội dung giả (các đường kẻ xám).
-
-    Watermark hiển thị "1 dấu lớn duy nhất giữa trang" — khớp đúng theo
-    `pdf_core.draw_text_watermark_centered`/`draw_image_watermark_centered` (đại ca đã
-    yêu cầu đảo ngược quyết định Tiling toàn trang trước đó ở 02_dac_ta_tinh_nang.md mục
-    7.3, để tiết kiệm tài nguyên và không phải tính toán quá nhiều vị trí).
-
-    Lưu ý về layer "Under Content" trong preview: PyMuPDF xuất ảnh trang là dữ liệu
-    raster phẳng, không có khái niệm "xuyên thấu" như PDF vector layer thật, nên không
-    thể mô phỏng đúng 100% việc watermark "nằm dưới" nội dung ngay trên Qt canvas. Ở đây
-    chỉ vẽ watermark mờ hơn một chút khi chọn "Under Content" để gợi ý trực quan — file
-    PDF thật xuất ra vẫn tuân đúng layer Over/Under theo `overlay=` truyền cho
-    `apply_watermark_to_pdf`, preview chỉ mang tính tham khảo bố cục/màu/góc xoay."""
 
     def __init__(self, page_number: int, aspect_ratio: Optional[float] = None,
                  page_width_points: Optional[float] = None,
@@ -508,11 +418,7 @@ class _WatermarkPreviewPage(QFrame):
         super().__init__(parent)
         self.page_number = page_number
         self.aspect_ratio = aspect_ratio or (_PREVIEW_PAGE_HEIGHT_DEFAULT / _PREVIEW_PAGE_WIDTH_FALLBACK)
-        # Chiều rộng THẬT của trang PDF tính bằng points (VD A4 ~595pt) — dùng để quy đổi
-        # point -> pixel canvas ĐÚNG TỶ LỆ khi vẽ watermark mô phỏng (font size, scale ảnh).
-        # Trước đây code lấy nhầm hằng số cố định _PREVIEW_PAGE_WIDTH_FALLBACK (340, chỉ
-        # là kích thước khung mặc định khi chưa có trang thật) làm mẫu số quy đổi, khiến
-        # watermark trên preview to/nhỏ sai khác hẳn so với file PDF thật xuất ra.
+
         self.page_width_points = page_width_points or _PREVIEW_PAGE_WIDTH_FALLBACK
         self.page_pixmap: Optional[QPixmap] = None
 
@@ -531,9 +437,7 @@ class _WatermarkPreviewPage(QFrame):
         )
 
     def set_page_pixmap(self, pixmap: QPixmap) -> None:
-        """Gán ảnh render thật của trang — gọi lại mỗi khi đổi file hoặc đổi mức zoom.
-        `PageRenderer` đã tự cache theo (path, page_index, width) nên không tốn công
-        render lại khi width không đổi."""
+
         self.page_pixmap = pixmap
         self.update()
 
@@ -569,8 +473,6 @@ class _WatermarkPreviewPage(QFrame):
         w = self.width()
         h = self.height()
 
-        # Nền: ảnh trang PDF thật (nếu đã render xong) — thay cho nội dung giả lập.
-        # Nếu chưa render kịp (VD vừa đổi zoom), giữ nền trắng của QFrame làm placeholder.
         if self.page_pixmap is not None and not self.page_pixmap.isNull():
             painter.drawPixmap(self.rect(), self.page_pixmap, self.page_pixmap.rect())
 
@@ -578,15 +480,7 @@ class _WatermarkPreviewPage(QFrame):
         self._draw_watermark(painter, w, h, muted=muted)
 
     def _draw_watermark(self, painter: QPainter, w: int, h: int, muted: bool = False) -> None:
-        """Vẽ "1 dấu watermark lớn duy nhất giữa trang" — khớp đúng
-        `pdf_core.draw_text_watermark_centered`/`draw_image_watermark_centered`.
 
-        Quy đổi point (đơn vị PDF thật) -> pixel canvas Qt luôn dùng
-        `w / self.page_width_points` (chiều rộng khung hiện tại chia chiều rộng THẬT của
-        trang tính bằng points) — KHÔNG dùng hằng số cố định — để font size/scale ảnh
-        hiển thị đúng tỷ lệ so với file PDF thật xuất ra (trước đây dùng nhầm hằng số
-        `_PREVIEW_PAGE_WIDTH_FALLBACK` làm mẫu số, gây lệch kích thước khi trang thật có
-        chiều rộng points khác 340, VD trang A4 ~595pt)."""
         painter.save()
 
         opacity_percent = self.wm_opacity * (0.6 if muted else 1.0)
@@ -604,9 +498,6 @@ class _WatermarkPreviewPage(QFrame):
                 color.setAlpha(alpha)
                 painter.setPen(QPen(color))
 
-                # QFont.Normal (KHÔNG Bold) — khớp đúng nét chữ Regular của font
-                # Segoe UI thật (segoeui.ttf) mà pdf_core dùng khi xuất file, tránh nét
-                # chữ trên preview đậm/to hơn thật do bị ép Bold trước đây.
                 scaled_font_size = max(10, round(self.wm_font_size * points_to_px))
                 font = QFont("Segoe UI", scaled_font_size, QFont.Normal)
                 painter.setFont(font)
@@ -637,11 +528,6 @@ class _WatermarkPreviewPage(QFrame):
 # Dialog xác nhận trùng tên file (Ghi đè / Đổi tên khác / Hủy)
 # ----------------------------------------------------------------------
 class _OverwriteConfirmDialog(QDialog):
-    """Dialog xác nhận khi tên file kết quả bị trùng — tự vẽ riêng bằng QDialog, đồng bộ
-    style ảnh đại ca gửi (nền trắng, chữ tối, nút Accent cho hành động chính), thay cho
-    cảnh báo ghi đè mặc định của hệ điều hành (đã tắt qua
-    `QFileDialog.Option.DontConfirmOverwrite` ở nơi gọi dialog chọn nơi lưu, để không hỏi
-    2 lần cho cùng 1 việc — đúng quy ước chung đã dùng cho Gộp file/Edit/Chèn file)."""
 
     RESULT_OVERWRITE = "overwrite"
     RESULT_RENAME = "rename"
@@ -820,7 +706,7 @@ class WatermarkFeatureWidget(QWidget):
             "QStackedWidget { background: transparent; border: none; }"
         )
 
-        # === PAGE 1: TEXT CONFIG (không khung bao quanh, tiêu đề nằm ngoài) ===
+        # === PAGE 1: TEXT CONFIG ===
         text_config_widget = QWidget()
         text_config_widget.setStyleSheet(
             "QWidget { background: transparent; border: none; }"
@@ -855,13 +741,6 @@ class WatermarkFeatureWidget(QWidget):
         font_color_row = QHBoxLayout()
         font_color_row.setSpacing(10)
 
-        # Font Size — QComboBox EDITABLE: vừa xổ list chọn nhanh các mốc có sẵn, vừa gõ
-        # tay số tự do (theo yêu cầu mới nhất của đại ca). Giới hạn khoảng 48-99 (đã đổi
-        # từ QSpinBox trước đó) — chỉ còn 1 dấu lớn duy nhất giữa trang nên cần font đủ
-        # lớn mới rõ nét, đồng thời tránh chọn cỡ quá lớn (>=100) dễ tràn mép trang khi
-        # kết hợp góc xoay tuỳ ý. `QIntValidator(48, 99)` chặn gõ số ngoài khoảng ngay
-        # khi nhập; `_on_font_size_editing_finished` tự chỉnh về biên gần nhất nếu người
-        # dùng gõ giá trị không hợp lệ (VD chữ, số âm, để trống) rồi rời khỏi ô.
         font_col = QVBoxLayout()
         font_col.setSpacing(4)
         font_lbl = QLabel("Font size")
@@ -917,7 +796,7 @@ class WatermarkFeatureWidget(QWidget):
 
         self.config_stack.addWidget(text_config_widget)
 
-        # === PAGE 2: IMAGE CONFIG (thẻ chọn ảnh & Scale tách riêng, không khung gộp) ===
+        # === PAGE 2: IMAGE CONFIG  ===
         image_config_widget = QWidget()
         image_config_widget.setStyleSheet(
             "QWidget { background: transparent; border: none; }"
@@ -1256,12 +1135,8 @@ class WatermarkFeatureWidget(QWidget):
         root_layout.addWidget(column_a_widget, 40)
         root_layout.addWidget(column_b_widget, 60)
 
-        # Trạng thái rỗng ban đầu — chưa có file thật nào được chọn (đã bỏ dữ liệu demo
-        # "Tai lieu 02.pdf" trước đây vì không phải file thật, không thể render/xử lý).
         self._show_empty_preview()
 
-    # ------------------------------------------------------------------
-    # QSS Helpers
     # ------------------------------------------------------------------
     def _slider_qss(self) -> str:
         return f"""
@@ -1285,7 +1160,7 @@ class WatermarkFeatureWidget(QWidget):
         """
 
     def _spinbox_qss(self) -> str:
-        # Bỏ hoàn toàn 2 nút mũi tên tăng giảm (width: 0px), hiển thị số căn giữa màu đen rõ ràng
+    
         return f"""
             QSpinBox {{
                 border: 1.5px solid {COLOR_BORDER_STRONG};
@@ -1332,7 +1207,7 @@ class WatermarkFeatureWidget(QWidget):
     def _open_color_dialog(self) -> None:
         dialog = QColorDialog(self._selected_color, self)
         dialog.setWindowTitle("Chọn màu Watermark")
-        # Ép stylesheet cho QColorDialog để toàn bộ màu chữ hiển thị rõ màu đen
+
         dialog.setStyleSheet(
             """
             QColorDialog {
@@ -1373,9 +1248,7 @@ class WatermarkFeatureWidget(QWidget):
             self._sync_preview()
 
     def _on_file_selected(self, path: str) -> None:
-        """Validate file ngay lúc chọn (mục 8 02_dac_ta_tinh_nang.md): bắt file hỏng /
-        có mật khẩu, báo lỗi qua result_label, KHÔNG cho vào xử lý — giữ nguyên file
-        đang chọn trước đó (nếu có) thay vì xóa trắng preview."""
+
         try:
             page_infos = list_page_infos(path)
         except PasswordProtectedError:
@@ -1391,7 +1264,7 @@ class WatermarkFeatureWidget(QWidget):
 
         self._current_file_path = path
         self._current_page_infos = page_infos
-        self._renderer.clear_cache(path)  # tránh dính ảnh cache cũ nếu chọn lại đúng file này
+        self._renderer.clear_cache(path)  
 
         name = os.path.basename(path)
         self._load_preview(name, len(page_infos))
@@ -1420,7 +1293,7 @@ class WatermarkFeatureWidget(QWidget):
         self._hide_result()
 
     # ------------------------------------------------------------------
-    # Dựng cấu hình Watermark & gọi logic thật (pdf_core.apply_watermark_to_pdf)
+    # Dựng cấu hình Watermark & gọi logic thật
     # ------------------------------------------------------------------
     def _current_font_size(self) -> int:
         text = self.font_size_combo.currentText().strip()
@@ -1462,10 +1335,7 @@ class WatermarkFeatureWidget(QWidget):
         )
 
     def _prompt_save_path(self, default_dir: str, default_name: str) -> Optional[str]:
-        """Hiện dialog chọn nơi lưu (kiểu Save As, gộp chung chọn thư mục + đặt tên,
-        giống Edit/Chèn file). Nếu trùng tên, hỏi lại bằng `_OverwriteConfirmDialog`
-        (Ghi đè / Đổi tên khác / Hủy) — đã tắt cảnh báo ghi đè mặc định của hệ điều hành
-        qua `QFileDialog.Option.DontConfirmOverwrite` để không hỏi 2 lần."""
+
         current_dir = default_dir
         current_name = default_name
         while True:
@@ -1475,7 +1345,7 @@ class WatermarkFeatureWidget(QWidget):
                 options=QFileDialog.Option.DontConfirmOverwrite,
             )
             if not save_path:
-                return None  # người dùng bấm Hủy trên dialog chọn nơi lưu
+                return None 
 
             if os.path.exists(save_path):
                 filename = os.path.basename(save_path)
@@ -1485,14 +1355,14 @@ class WatermarkFeatureWidget(QWidget):
                 elif choice == _OverwriteConfirmDialog.RESULT_RENAME:
                     current_dir = os.path.dirname(save_path)
                     current_name = filename
-                    continue  # mở lại dialog chọn nơi lưu để đặt tên khác
+                    continue  
                 else:
-                    return None  # Hủy toàn bộ thao tác lưu
+                    return None  
 
             return save_path
 
     def _open_result_folder(self, file_path: str) -> None:
-        """Tự động mở thư mục chứa file kết quả — giống Tách/Gộp/Chèn file/Edit."""
+
         folder = os.path.dirname(file_path)
         if folder:
             QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
@@ -1521,7 +1391,7 @@ class WatermarkFeatureWidget(QWidget):
 
         save_path = self._prompt_save_path(default_dir, default_name)
         if not save_path:
-            return  # người dùng đã hủy — không hiện thông báo gì thêm
+            return 
 
         self.setCursor(Qt.WaitCursor)
         try:
@@ -1542,7 +1412,7 @@ class WatermarkFeatureWidget(QWidget):
         except FileLockedError:
             self._show_error("File đang được sử dụng bởi chương trình khác, vui lòng đóng và thử lại.")
             return
-        except Exception as exc:  # phòng hờ lỗi không lường trước, không để crash UI
+        except Exception as exc:  
             log_error("Lỗi không xác định khi chèn watermark", exc)
             self._show_error(f"Đã xảy ra lỗi khi chèn Watermark: {exc}")
             return
@@ -1576,8 +1446,7 @@ class WatermarkFeatureWidget(QWidget):
             )
 
     def _page_aspect_ratio(self, page_index: int) -> float:
-        """Tỉ lệ cao/rộng thật của trang (theo kích thước points từ PageInfo) — dùng
-        thay cho tỉ lệ mặc định giả định khi đã có file thật."""
+
         if 0 <= page_index < len(self._current_page_infos):
             info = self._current_page_infos[page_index]
             if info.width:
@@ -1585,9 +1454,7 @@ class WatermarkFeatureWidget(QWidget):
         return _PREVIEW_PAGE_HEIGHT_DEFAULT / _PREVIEW_PAGE_WIDTH_FALLBACK
 
     def _page_width_points(self, page_index: int) -> float:
-        """Chiều rộng THẬT của trang tính bằng points (VD A4 ~595pt) — dùng để
-        `_WatermarkPreviewPage` quy đổi đúng tỷ lệ point -> pixel khi vẽ watermark mô
-        phỏng, khớp WYSIWYG với kích thước thật trên file PDF xuất ra."""
+
         if 0 <= page_index < len(self._current_page_infos):
             info = self._current_page_infos[page_index]
             if info.width:
@@ -1595,8 +1462,7 @@ class WatermarkFeatureWidget(QWidget):
         return _PREVIEW_PAGE_WIDTH_FALLBACK
 
     def _render_page_into_frame(self, frame: "_WatermarkPreviewPage", page_index: int, width: int) -> None:
-        """Render ảnh trang thật qua PageRenderer rồi gán vào frame preview. Lỗi (nếu có)
-        chỉ ghi log, không chặn UI — frame giữ nền trắng làm placeholder."""
+
         if not self._current_file_path:
             return
         try:
@@ -1635,12 +1501,7 @@ class WatermarkFeatureWidget(QWidget):
         for i in range(total_pages):
             page_number = i + 1
             wrapper = QWidget()
-            # Ép KHÔNG co giãn theo chiều dọc — nếu không, khi file ít trang (còn nhiều
-            # khoảng trống trong thumb_scroll), Qt sẽ chia phần không gian thừa cho các
-            # `wrapper` này (dù đã có addStretch() ở cuối thumb_layout, addStretch() một
-            # mình không hấp thụ hết 100% khoảng trống khi các item lân cận vẫn ở chính
-            # sách Preferred mặc định) — biểu hiện là khoảng cách giữa các thumbnail bị
-            # giãn to bất thường. Xem thêm ghi chú sizeHint() trong _PreviewThumb.
+
             wrapper.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             wrapper_layout = QVBoxLayout(wrapper)
             wrapper_layout.setContentsMargins(0, 0, 0, 0)
@@ -1661,8 +1522,6 @@ class WatermarkFeatureWidget(QWidget):
             self.thumb_layout.addWidget(wrapper)
             self._preview_thumbs.append(thumb)
 
-            # Render ảnh thumbnail thật (giống Tách file/Edit) — chạy đồng bộ trên UI
-            # thread, xem tồn đọng không bắt buộc ở đầu file.
             if self._current_file_path:
                 try:
                     data = self._renderer.render_thumbnail(

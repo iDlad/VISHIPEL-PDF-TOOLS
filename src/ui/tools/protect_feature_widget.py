@@ -1,25 +1,5 @@
 """
-Giao diện tính năng Bảo vệ (Protect) — Đặt mật khẩu / Mở khóa file PDF.
-
-Đồng bộ hoàn toàn với thiết kế của merge_widget.py:
-- Cột A (40%): Drop zone (CHỈ CHỌN 1 FILE) → segmented tab Đặt mật khẩu / Mở khóa
-  → nội dung thay đổi theo tab → hàng nút hành động cuối cùng.
-- Cột B (60%): Card xem trước giống Merge — header có cụm Zoom In/Out ±15%
-  (50%-200%), dải thumbnail trái (đồng bộ 1 chiều: click → cuộn khung lớn),
-  khung lớn dùng _PannablePreviewScrollArea (cuộn chuột + pan chuột trái).
-
-Luồng nghiệp vụ THẬT (đã nối pdf_core, xem 02_dac_ta_tinh_nang.md mục 6):
-- Tab Đặt mật khẩu: chọn 1 file KHÔNG có mật khẩu → render preview thật ngay.
-  Nếu file đã có mật khẩu/giới hạn → báo lỗi, yêu cầu dùng tab Mở khóa trước.
-  Validate: đã chọn file, mật khẩu không trống, 2 ô khớp nhau → protect_pdf().
-- Tab Mở khóa: chọn file đã có mật khẩu/giới hạn.
-  * Cần User Password (needs_password): Cột B giữ trạng thái "khóa", KHÔNG render
-    nội dung cho tới khi nhập đúng mật khẩu và authenticate() thành công.
-  * Chỉ có Owner Password (owner-only, không cần mật khẩu mở): render Cột B ngay
-    (nội dung vốn đọc tự do được), ẩn ô mật khẩu, hỏi xác nhận riêng lúc bấm Lưu File.
-  Lưu File luôn xuất ra 1 file MỚI hoàn toàn không còn mật khẩu/giới hạn.
-
-Advanced Options luôn mở, cố định — không có trạng thái thu gọn.
+/src/ui/tools/protect_feature_widget.py
 """
 from __future__ import annotations
 
@@ -70,7 +50,7 @@ from src.ui.vishipel_theme import (
 _ROW_ICON_SIZE = 34
 _DROPZONE_ICON_BOX = 56
 
-# Cột B — giữ nguyên hằng số giống merge_widget.py để 2 màn hình zoom giống nhau.
+# Cột B 
 _THUMB_STRIP_WIDTH = 115
 _THUMB_W, _THUMB_H = 72, 94
 _BADGE_SIZE = 18
@@ -86,23 +66,17 @@ _PREVIEW_PAGE_WIDTH_FALLBACK = 340
 _PREVIEW_PAGE_HEIGHT_DEFAULT = 460
 _DEFAULT_ASPECT_RATIO = _PREVIEW_PAGE_HEIGHT_DEFAULT / _PREVIEW_PAGE_WIDTH_FALLBACK
 
-# Chiều cao ô nhập mật khẩu + nút con mắt (nút mắt nền cam, theo ảnh thiết kế).
 _PASSWORD_INPUT_HEIGHT = 52
 _EYE_BUTTON_WIDTH = 52
 _EYE_BUTTON_HEIGHT = 40
-# Nút "Bắt đầu Mở khóa" full-width, cao hơn nút thường (theo ảnh Mở khóa).
+
 _UNLOCK_CTA_HEIGHT = 52
 
-# Advanced Options — màu chip + banner cảnh báo.
 _CHIP_BG = "#F3F4F6"
 
-# Tên file gợi ý mặc định (chưa có trong 02_dac_ta_tinh_nang.md mục 6, đã thống nhất
-# riêng cho lần nối logic này — theo đúng khuôn mẫu "<gốc>_<hậu tố>.pdf" như Edit/Chèn).
 _DEFAULT_SUFFIX_PROTECT = "_protected"
 _DEFAULT_SUFFIX_UNLOCK = "_unlocked"
 
-# Ngưỡng quy đổi điểm 0-100 của pdf_core.calculate_password_strength() sang 3 mức
-# hiển thị trên _StrengthMeter (đã thống nhất riêng cho lần nối logic này).
 _STRENGTH_WEAK_MAX = 40
 _STRENGTH_MEDIUM_MAX = 70
 
@@ -132,7 +106,6 @@ _SCROLLBAR_QSS = f"""
 
 
 def _zoom_button_style() -> str:
-    """Style cụm Zoom In/Out ở header Cột B — copy nguyên từ merge_widget.py."""
     return f"""
         QToolButton {{
             background-color: white;
@@ -152,10 +125,7 @@ def _zoom_button_style() -> str:
         }}
         """
 
-
 def _primary_button_style() -> str:
-    """Style nút hành động chính (Accent) — dùng chung cho ProtectFeatureWidget và các
-    dialog tự vẽ bên dưới (_OverwriteConfirmDialog/_ConfirmDialog)."""
     return f"""
         QPushButton {{
             background-color: {COLOR_ACCENT};
@@ -173,8 +143,6 @@ def _primary_button_style() -> str:
 
 
 def _secondary_button_style() -> str:
-    """Style nút phụ (viền, nền trắng) — dùng chung cho ProtectFeatureWidget và các
-    dialog tự vẽ bên dưới."""
     return f"""
         QPushButton {{
             background-color: white;
@@ -189,9 +157,8 @@ def _secondary_button_style() -> str:
         QPushButton:pressed {{ background-color: #E5E7EB; }}
         """
 
-
 # ---------------------------------------------------------------------------
-# A1 — Drop zone (CHỈ CHỌN 1 FILE) — copy layout từ merge_widget.py
+# A1 — Drop zone (CHỈ CHỌN 1 FILE)
 # ---------------------------------------------------------------------------
 class _DropZone(QFrame):
     files_selected = Signal(list)
@@ -282,11 +249,8 @@ class _DropZone(QFrame):
             # Bảo vệ chỉ dùng 1 file — nếu kéo nhiều file thì chỉ lấy file đầu.
             self.files_selected.emit(paths[:1])
 
-
 # ---------------------------------------------------------------------------
 # A2 — Segmented tab: Đặt mật khẩu / Mở khóa
-# Tự vẽ bằng 2 QPushButton checkable trong khung nền xám — dễ sửa, không phụ
-# thuộc style mặc định của QTabWidget.
 # ---------------------------------------------------------------------------
 class _ModeTabs(QFrame):
     mode_changed = Signal(str)  # "set" | "unlock"
@@ -345,9 +309,8 @@ class _ModeTabs(QFrame):
     def mode(self) -> str:
         return self.MODE_UNLOCK if self.unlock_tab_btn.isChecked() else self.MODE_SET
 
-
 # ---------------------------------------------------------------------------
-# A3 — Ô nhập mật khẩu: icon ổ khóa trái + nút con mắt nền cam bên phải
+# A3 — Ô nhập mật khẩu
 # ---------------------------------------------------------------------------
 class _PasswordInput(QFrame):
     def __init__(self, placeholder: str, parent: QWidget | None = None) -> None:
@@ -375,7 +338,7 @@ class _PasswordInput(QFrame):
 
         self.edit = QLineEdit()
         self.edit.setPlaceholderText(placeholder)
-        self.edit.setEchoMode(QLineEdit.Password)  # Mặc định mã hóa mật khẩu thành dấu chấm
+        self.edit.setEchoMode(QLineEdit.Password)  
         self.edit.setStyleSheet(
             f"""
             QLineEdit {{
@@ -392,7 +355,7 @@ class _PasswordInput(QFrame):
         self.eye_btn = QToolButton()
         self.eye_btn.setCursor(Qt.PointingHandCursor)
         self.eye_btn.setFixedSize(_EYE_BUTTON_WIDTH, _EYE_BUTTON_HEIGHT)
-        # Mặc định: Mật khẩu ẩn -> Nút hiển thị MẮT NHẮM
+
         self.eye_btn.setIcon(qta.icon("mdi6.eye-off-outline", color="white"))
         self.eye_btn.setIconSize(QSize(20, 20))
         self.eye_btn.setToolTip("Hiện/ẩn mật khẩu")
@@ -417,12 +380,12 @@ class _PasswordInput(QFrame):
     def _toggle_echo(self) -> None:
         # Nếu đang ở chế độ ẨN (Password):
         if self.edit.echoMode() == QLineEdit.Password:
-            self.edit.setEchoMode(QLineEdit.Normal)  # 1. Chuyển sang HIỆN mật khẩu
-            self.eye_btn.setIcon(qta.icon("mdi6.eye-outline", color="white"))  # 2. Đổi icon sang MẮT MỞ
+            self.edit.setEchoMode(QLineEdit.Normal)  
+            self.eye_btn.setIcon(qta.icon("mdi6.eye-outline", color="white")) 
         # Nếu đang ở chế độ HIỆN (Normal):
         else:
-            self.edit.setEchoMode(QLineEdit.Password)  # 1. Chuyển sang ẨN mật khẩu (dấu chấm)
-            self.eye_btn.setIcon(qta.icon("mdi6.eye-off-outline", color="white"))  # 2. Đổi icon sang MẮT NHẮM
+            self.edit.setEchoMode(QLineEdit.Password)  
+            self.eye_btn.setIcon(qta.icon("mdi6.eye-off-outline", color="white"))  
 
     def text(self) -> str:
         return self.edit.text()
@@ -494,9 +457,7 @@ class _StrengthMeter(QWidget):
 
 
 # ---------------------------------------------------------------------------
-# A5 — Checkbox tùy biến (vẽ bằng QToolButton checkable + icon check qtawesome)
-# Tự vẽ thay vì style QCheckBox::indicator vì QSS không tự vẽ dấu check khi
-# custom indicator — cách này render chuẩn trên mọi platform.
+# A5 — Checkbox tùy biến
 # ---------------------------------------------------------------------------
 class _ToggleCheck(QToolButton):
     def __init__(self, label: str, checked: bool = False, parent: QWidget | None = None) -> None:
@@ -511,7 +472,6 @@ class _ToggleCheck(QToolButton):
         self._refresh_icon()
 
     def _refresh_icon(self) -> None:
-        # SỬA: Sử dụng icon ô checkbox rõ ràng thay vì làm trong suốt icon
         if self.isChecked():
             self.setIcon(qta.icon("mdi6.checkbox-marked", color=COLOR_ACCENT))
         else:
@@ -535,8 +495,7 @@ class _ToggleCheck(QToolButton):
 
 
 # ---------------------------------------------------------------------------
-# A6 — Advanced Options: luôn mở, cố định, KHÔNG có nút thu gọn.
-# Gồm: tiêu đề + 3 quyền hạn (checkbox) + chip AES 256-bit + banner cảnh báo.
+# A6 — Advanced Options
 # ---------------------------------------------------------------------------
 class _AdvancedOptions(QFrame):
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -549,7 +508,7 @@ class _AdvancedOptions(QFrame):
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(10)
 
-        # Tiêu đề (bỏ icon mũi tên collapse theo yêu cầu).
+        # Tiêu đề 
         title_row = QHBoxLayout()
         title_icon = QLabel()
         title_icon.setPixmap(qta.icon("mdi6.cog-outline", color=COLOR_TEXT_SECONDARY).pixmap(QSize(18, 18)))
@@ -564,8 +523,7 @@ class _AdvancedOptions(QFrame):
         title_row.addStretch()
         layout.addLayout(title_row)
 
-        # 3 quyền hạn — "Cấm In" mặc định được tick (theo ảnh thiết kế).
-        # Thứ tự PHẢI khớp đúng build_protection_permissions(cam_in, cam_chinh_sua, cam_sao_chep).
+        # 3 quyền hạn
         self.checks: List[_ToggleCheck] = []
         for label, checked in (
             ("Cấm In", True),
@@ -636,7 +594,7 @@ class _AdvancedOptions(QFrame):
 
 
 # ---------------------------------------------------------------------------
-# Cột B — Thumbnail nhỏ (dải trái) — có ảnh render thật (thay placeholder cũ)
+# Cột B — Thumbnail nhỏ (dải trái)
 # ---------------------------------------------------------------------------
 class _PreviewThumb(QFrame):
     clicked = Signal(int)
@@ -705,7 +663,7 @@ class _PreviewThumb(QFrame):
 
 
 # ---------------------------------------------------------------------------
-# Cột B — ScrollArea hỗ trợ pan bằng chuột trái — copy nguyên từ merge_widget.py
+# Cột B — ScrollArea hỗ trợ pan bằng chuột trái
 # ---------------------------------------------------------------------------
 class _PannablePreviewScrollArea(QScrollArea):
     viewport_resized = Signal()
@@ -758,7 +716,7 @@ class _PannablePreviewScrollArea(QScrollArea):
 
 
 # ---------------------------------------------------------------------------
-# Cột B — 1 trang preview, có ảnh render thật (thay placeholder số to cũ)
+# Cột B — 1 trang preview
 # ---------------------------------------------------------------------------
 class _ProtectPreviewPage(QFrame):
     def __init__(self, page_number: int, aspect_ratio: float = _DEFAULT_ASPECT_RATIO,
@@ -805,7 +763,7 @@ class _ProtectPreviewPage(QFrame):
 
 
 # ---------------------------------------------------------------------------
-# Cột B — Trạng thái "khóa" / trống (thay cho nội dung khi chưa mở khóa)
+# Cột B — Trạng thái "khóa"
 # ---------------------------------------------------------------------------
 class _LockedPlaceholder(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -845,9 +803,7 @@ class _LockedPlaceholder(QWidget):
 
 
 # ---------------------------------------------------------------------------
-# Dialog tự vẽ — Trùng tên khi lưu: Ghi đè / Đổi tên khác / Hủy
-# (01_dac_ta_giao_dien.md mục 3: nền trắng/chữ tối/nút Accent, đồng bộ style
-# đã dùng ở Gộp file/Edit/Chèn file)
+# Dialog — Trùng tên khi lưu: Ghi đè / Đổi tên khác / Hủy
 # ---------------------------------------------------------------------------
 class _OverwriteConfirmDialog(QDialog):
     OVERWRITE = "overwrite"
@@ -926,9 +882,7 @@ class _OverwriteConfirmDialog(QDialog):
 
 
 # ---------------------------------------------------------------------------
-# Dialog tự vẽ — Xác nhận Đồng ý/Hủy dùng chung (case owner-only ở Gỡ mật khẩu:
-# "File này không có mật khẩu mở, chỉ có giới hạn quyền — Bạn có chắc muốn gỡ
-# giới hạn?", đúng 02_dac_ta_tinh_nang.md mục 6.5 case 3)
+# Dialog — Xác nhận Đồng ý/Hủy dùng chung
 # ---------------------------------------------------------------------------
 class _ConfirmDialog(QDialog):
     def __init__(self, message: str, parent: QWidget | None = None) -> None:
@@ -986,7 +940,6 @@ class _ConfirmDialog(QDialog):
         dialog.exec()
         return dialog._confirmed
 
-
 # ---------------------------------------------------------------------------
 # Widget chính
 # ---------------------------------------------------------------------------
@@ -995,15 +948,14 @@ class ProtectFeatureWidget(QWidget):
         super().__init__(parent)
 
         # State nghiệp vụ
-        self._current_path: Optional[str] = None      # đường dẫn đầy đủ, dùng để xử lý
-        self._current_file: Optional[str] = None       # tên hiển thị (basename)
+        self._current_path: Optional[str] = None      
+        self._current_file: Optional[str] = None       
         self._protection_status: Optional[pdf_core.ProtectionStatus] = None
         self._unlock_session: Optional[pdf_core.UnlockPreviewSession] = None
         self._mode = _ModeTabs.MODE_SET
         self._current_page = 0
         self._page_count = 0
 
-        # Renderer dùng chung cho tab Đặt mật khẩu (file không mật khẩu, render qua path)
         self._page_renderer = pdf_core.PageRenderer()
 
         # State preview Cột B (giống merge_widget.py)
@@ -1033,11 +985,11 @@ class ProtectFeatureWidget(QWidget):
 
         # --- A3: Nội dung thay đổi theo tab ---
         self.mode_stack = QStackedWidget()
-        self.mode_stack.addWidget(self._build_set_password_page())   # index 0
-        self.mode_stack.addWidget(self._build_unlock_page())          # index 1
+        self.mode_stack.addWidget(self._build_set_password_page())  
+        self.mode_stack.addWidget(self._build_unlock_page())         
         column_a.addWidget(self.mode_stack, 1)
 
-        # Label kết quả / lỗi (giống merge_widget.py)
+        # Label kết quả
         self.result_label = QLabel("")
         self.result_label.setWordWrap(True)
         self.result_label.setStyleSheet("font-size: 12px;")
@@ -1166,8 +1118,6 @@ class ProtectFeatureWidget(QWidget):
         self._update_zoom_percent_label()
 
     # ------------------------------------------------------------------
-    # Dựng 2 trang nội dung theo tab
-    # ------------------------------------------------------------------
     def _build_set_password_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -1261,7 +1211,7 @@ class ProtectFeatureWidget(QWidget):
         clear_btn.clicked.connect(self._on_clear_clicked)
         bottom_row.addWidget(clear_btn)
 
-        # "Lưu File" — chỉ bật sau khi mở khóa thành công (hoặc case owner-only sẵn sàng ngay).
+        # "Lưu File" — chỉ enable khi đã mở khóa thành công (hoặc file owner-only).
         self.save_file_btn = QPushButton(" Lưu File")
         self.save_file_btn.setIcon(qta.icon("mdi6.content-save-outline", color="white"))
         self.save_file_btn.setCursor(Qt.PointingHandCursor)
@@ -1345,8 +1295,6 @@ class ProtectFeatureWidget(QWidget):
         self._refresh_preview_state()
 
     def _revalidate_current_file_for_mode(self) -> None:
-        """Gọi khi đổi tab trong lúc đang có file được chọn — 1 file chỉ hợp lệ cho
-        đúng 1 trong 2 tab (đã bảo vệ → Mở khóa; chưa bảo vệ → Đặt mật khẩu)."""
         status = self._protection_status
         if self._mode == _ModeTabs.MODE_SET and status.is_protected:
             self._show_error(
@@ -1481,8 +1429,6 @@ class ProtectFeatureWidget(QWidget):
             self._show_error("Bạn cần mở khóa file thành công trước khi lưu.")
             return
 
-        # Trường hợp owner-only (không cần mật khẩu mở) — hỏi xác nhận riêng trước khi gỡ
-        # giới hạn (02_dac_ta_tinh_nang.md mục 6.5 case 3).
         if not self._unlock_session.needs_password:
             confirmed = _ConfirmDialog.ask(
                 self,
@@ -1523,9 +1469,6 @@ class ProtectFeatureWidget(QWidget):
         return f"{stem}{suffix}.pdf"
 
     def _ask_save_path(self, default_name: str) -> Optional[str]:
-        """Mở dialog chọn nơi lưu (kiểu Save As). Đã tắt cảnh báo ghi đè mặc định của hệ
-        điều hành (DontConfirmOverwrite) để tự kiểm tra trùng tên bằng dialog tự vẽ riêng
-        (Ghi đè / Đổi tên khác / Hủy) — không hỏi 2 lần cho cùng 1 việc."""
         dialog = QFileDialog(self, "Chọn nơi lưu file kết quả")
         dialog.setAcceptMode(QFileDialog.AcceptSave)
         dialog.setFileMode(QFileDialog.AnyFile)
@@ -1586,8 +1529,6 @@ class ProtectFeatureWidget(QWidget):
             self.save_file_btn.setEnabled(False)
 
     def _load_set_password_preview(self) -> bool:
-        """Render preview thật cho tab Đặt mật khẩu — file lúc này KHÔNG có mật khẩu,
-        dùng list_page_infos()/PageRenderer (chỉ tái sử dụng, không sửa pdf_core)."""
         try:
             page_infos = pdf_core.list_page_infos(self._current_path)
         except Exception as exc:
@@ -1622,9 +1563,6 @@ class ProtectFeatureWidget(QWidget):
         return True
 
     def _render_unlock_preview(self) -> None:
-        """Render preview thật cho tab Mở khóa, TRỰC TIẾP từ fitz.Document đang mở trong
-        bộ nhớ của UnlockPreviewSession (mục 6b pdf_core.py) — dùng render_document_page()
-        (mục 8) đã có sẵn, không qua path/PDFDocument (file trên đĩa vẫn còn mật khẩu)."""
         session = self._unlock_session
         doc = session.document
         total_pages = pdf_core.get_document_page_count(doc)
@@ -1677,10 +1615,10 @@ class ProtectFeatureWidget(QWidget):
         self._update_zoom_buttons_state()
 
     # ------------------------------------------------------------------
-    # Xem trước (Cột B) — copy logic từ merge_widget.py
+    # Xem trước (Cột B)
     # ------------------------------------------------------------------
     def _build_preview_thumbs(self, total_pages: int) -> None:
-        # 1. Xóa sạch tất cả các item (bao gồm cả Widget và Stretch/Spacer cũ)
+
         while self.thumb_layout.count():
             item = self.thumb_layout.takeAt(0)
             if item.widget():
@@ -1691,21 +1629,17 @@ class ProtectFeatureWidget(QWidget):
         if total_pages == 0:
             return
 
-        # 2. Tạo từng Thumbnail
         for i in range(total_pages):
             page_number = i + 1
             thumb = _PreviewThumb(page_number)
             thumb.clicked.connect(self._on_thumb_clicked)
             
-            # Ép kích thước thumbnail không bao giờ vượt quá chiều cao chuẩn (72x94)
-            thumb.setFixedHeight(94)  # Hoặc thumb.setFixedHeight(_THUMB_H)
-            thumb.setFixedWidth(72)   # Hoặc thumb.setFixedWidth(_THUMB_W)
+            thumb.setFixedHeight(94)  
+            thumb.setFixedWidth(72)  
 
-            # Thêm trực tiếp vào layout với căn giữa theo chiều ngang
             self.thumb_layout.addWidget(thumb, 0, Qt.AlignHCenter | Qt.AlignTop)
             self._preview_thumbs.append(thumb)
 
-        # 3. Thêm Spacer dồn toàn bộ lên trên cùng
         self.thumb_layout.addStretch(1)
 
     def _build_preview_pages(self, total_pages: int,
@@ -1753,7 +1687,7 @@ class ProtectFeatureWidget(QWidget):
             self.preview_scroll_b.ensureWidgetVisible(current_frame, 0, 0)
 
     # ------------------------------------------------------------------
-    # Zoom Cột B — đồng bộ với merge_widget.py
+    # Zoom Cột B 
     # ------------------------------------------------------------------
     def _fit_base_width(self) -> int:
         viewport_width = self.preview_scroll_b.viewport().width()
@@ -1811,8 +1745,6 @@ class ProtectFeatureWidget(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        # Lần hiển thị đầu tiên: cửa sổ đã có kích thước thật, tính lại chiều rộng
-        # trang cho khớp khung Cột B thật sự (giữ nguyên fix từ merge_widget.py).
         if not self._initial_width_applied and self._preview_pages:
             self._initial_width_applied = True
             self._current_preview_width = None

@@ -1,15 +1,5 @@
 """
-SlidingStackedWidget
---------------------
-Helper xử lý hiệu ứng chuyển trang cho QStackedWidget.
-
-Đặc điểm:
-- Hiệu ứng trượt dọc từ trên xuống.
-- Animation nhanh, phù hợp desktop UI.
-- Có thể ngắt animation đang chạy ngay lập tức.
-- Hỗ trợ click liên tục: A -> B -> C -> D...
-- Không phụ thuộc vào currentIndex() trong lúc animation.
-- Quản lý rõ ràng trạng thái trang hiện tại và trang đích.
+/src/ui/animation_helper.py
 """
 
 from __future__ import annotations
@@ -56,7 +46,6 @@ class SlidingStackedWidget(QStackedWidget):
         # ---------------------------------------------------------
         self._anim_group: QParallelAnimationGroup | None = None
 
-        # Widget đang thực sự được xem là trang hiện tại.
         self._current_widget: QWidget | None = None
 
         # Widget đang được chuyển tới.
@@ -74,17 +63,6 @@ class SlidingStackedWidget(QStackedWidget):
     # =============================================================
 
     def slide_to_index(self, new_index: int) -> None:
-        """
-        Chuyển sang trang new_index bằng hiệu ứng slide.
-
-        Có thể gọi liên tục:
-
-            slide_to_index(1)
-            slide_to_index(2)
-            slide_to_index(3)
-
-        Animation hiện tại sẽ được dừng ngay và chuyển sang target mới.
-        """
 
         # ---------------------------------------------------------
         # Validate index
@@ -339,9 +317,6 @@ class SlidingStackedWidget(QStackedWidget):
     # =============================================================
 
     def _finish_without_animation(self, new_index: int) -> None:
-        """
-        Chuyển trang trực tiếp khi không thể chạy animation.
-        """
 
         self.setCurrentIndex(new_index)
 
@@ -366,9 +341,6 @@ class SlidingStackedWidget(QStackedWidget):
     # =============================================================
 
     def _clear_animation_state(self) -> None:
-        """
-        Xóa toàn bộ trạng thái animation.
-        """
 
         self._target_index = None
         self._target_widget = None
@@ -384,10 +356,6 @@ class SlidingStackedWidget(QStackedWidget):
     # =============================================================
 
     def setCurrentIndex(self, index: int) -> None:
-        """
-        Override để đồng bộ _current_widget khi code bên ngoài
-        gọi setCurrentIndex() trực tiếp.
-        """
 
         super().setCurrentIndex(index)
 
@@ -396,9 +364,6 @@ class SlidingStackedWidget(QStackedWidget):
             self._current_widget = self.currentWidget()
 
     def resizeEvent(self, event) -> None:
-        """
-        Giữ widget hiện tại đúng kích thước khi cửa sổ thay đổi.
-        """
 
         super().resizeEvent(event)
 
@@ -418,7 +383,5 @@ class SlidingStackedWidget(QStackedWidget):
                 )
 
         else:
-            # Trong animation không ép geometry của hai widget,
-            # tránh phá animation đang chạy.
             pass
 

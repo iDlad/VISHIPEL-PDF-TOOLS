@@ -1,11 +1,5 @@
 """
-Vishipel PDF Tools — src/pdf_core.py
-
-Lõi xử lý PDF bằng PyMuPDF (fitz). Toàn bộ nội dung trong file này THUẦN LOGIC,
-không import PySide6, để có thể tự test độc lập bằng script trước khi gắn vào UI
-(xem 04_kien_truc_module_va_flow.md, 05_lo_trinh_phat_trien.md — Giai đoạn 2).
-
-Nguyên tắc: widget UI không bao giờ tự xử lý PDF — chỉ gọi hàm/class ở đây.
+/src/pdf_core.py
 """
 from __future__ import annotations
 
@@ -51,7 +45,7 @@ class PDFDocument:
         self.path = path
         try:
             self._doc = fitz.open(path)
-        except Exception as exc:  # bắt mọi lỗi mở file: hỏng, không tồn tại, sai định dạng...
+        except Exception as exc:  
             raise CorruptedFileError(f"Không thể mở file: {path}") from exc
 
         if self._doc.needs_pass:
@@ -71,7 +65,7 @@ class PDFDocument:
 
     @property
     def raw(self) -> fitz.Document:
-        """Trả về fitz.Document gốc — dùng nội bộ bởi PageRenderer/PageEditSession/InsertSession."""
+    
         return self._doc
 
     @property
@@ -85,7 +79,7 @@ class PDFDocument:
 
 @dataclass
 class PageInfo:
-    """Metadata 1 trang để UI vẽ lưới thumbnail. Không có hành vi xử lý."""
+
     source_index: int
     width: float
     height: float
@@ -93,13 +87,12 @@ class PageInfo:
 
 
 def get_page_count(path: str) -> int:
-    """Trả về tổng số trang của file — hàm tiện ích ngắn cho các chỗ chỉ cần mỗi số trang."""
+   
     with PDFDocument(path) as doc:
         return doc.page_count
 
 
 def list_page_infos(path: str) -> List[PageInfo]:
-    """Trả về danh sách PageInfo cho toàn bộ trang — dùng để widget dựng lưới thumbnail ban đầu."""
     infos: List[PageInfo] = []
     with PDFDocument(path) as doc:
         for i in range(doc.page_count):
@@ -111,8 +104,6 @@ def list_page_infos(path: str) -> List[PageInfo]:
 
 
 class PageRenderer:
-    """Render ảnh trang thành PNG bytes, có cache nội bộ để không render lại khi người
-    dùng bấm qua lại nhiều lần (VD click đi click lại giữa các thumbnail)."""
 
     def __init__(self) -> None:
         self._cache: Dict[Tuple[str, int, int, int], bytes] = {}
@@ -137,9 +128,6 @@ class PageRenderer:
         with PDFDocument(path) as doc:
             page = doc.raw[page_index]
             if pending_rotation:
-                # pending_rotation: góc xoay TẠM đang chỉnh trong phiên Edit, chưa ghi ra file.
-                # Áp tạm vào page để render đúng preview, không ảnh hưởng file gốc trên đĩa
-                # vì object doc này chỉ tồn tại trong khối "with" và không được save().
                 page.set_rotation((page.rotation + pending_rotation) % 360)
 
             rect = page.rect
@@ -163,8 +151,7 @@ class PageRenderer:
 # =============================================================================
 
 def _safe_save(doc: fitz.Document, output_path: str) -> None:
-    """Ghi file, chuyển mọi lỗi ghi (file đang bị khóa, đường dẫn không hợp lệ, thư mục
-    không tồn tại...) thành FileLockedError để widget xử lý thống nhất theo 1 luồng lỗi."""
+
     try:
         doc.save(output_path)
     except Exception as exc:
@@ -173,11 +160,7 @@ def _safe_save(doc: fitz.Document, output_path: str) -> None:
 
 def _extract_pages_and_save(source_doc: fitz.Document, start: int, end: int,
                              output_dir: str, sequence_number: int) -> str:
-    """Trích trang [start, end] (inclusive, 0-based) từ source_doc, lưu thành 1 file mới.
-    Dùng chung bởi split_by_fixed_count và split_by_flags.
 
-    Tên file: PDF_Split_<số thứ tự 2 chữ số> (VD: PDF_Split_01.pdf, PDF_Split_02.pdf...),
-    đánh số theo đúng thứ tự file được tạo ra, bắt đầu từ 01."""
     new_doc = fitz.open()
     try:
         new_doc.insert_pdf(source_doc, from_page=start, to_page=end)
@@ -194,12 +177,6 @@ def _extract_pages_and_save(source_doc: fitz.Document, start: int, end: int,
 
 def split_by_fixed_count(path: str, pages_per_file: int, output_dir: str,
                           base_name: str) -> List[str]:
-    """Tách file gốc thành nhiều file, mỗi file đúng `pages_per_file` trang,
-    trang lẻ dồn vào file cuối cùng (VD: 10 trang, N=3 → các file 3-3-3-1 trang).
-
-    Ghi chú: `base_name` giữ trong chữ ký hàm để không đổi kiến trúc đã chốt, nhưng
-    KHÔNG dùng để đặt tên file nữa — tên file kết quả luôn theo mẫu PDF_Split_<STT>
-    (xem _extract_pages_and_save)."""
     if pages_per_file < 1:
         raise ValueError("pages_per_file phải >= 1")
 
@@ -220,12 +197,7 @@ def split_by_fixed_count(path: str, pages_per_file: int, output_dir: str,
 
 def split_by_flags(path: str, flag_positions: List[int], output_dir: str,
                     base_name: str) -> List[str]:
-    """Tách file theo danh sách vị trí đặt cờ. flag_positions là index trang (0-based)
-    ngay trước mỗi điểm ngắt — VD file 10 trang, đặt cờ giữa trang 3 và trang 4 → giá trị 3.
 
-    Ghi chú: `base_name` giữ trong chữ ký hàm để không đổi kiến trúc đã chốt, nhưng
-    KHÔNG dùng để đặt tên file nữa — tên file kết quả luôn theo mẫu PDF_Split_<STT>
-    (xem _extract_pages_and_save)."""
     if not flag_positions:
         raise ValueError("Cần ít nhất 1 cờ để tách theo chế độ này")
 
@@ -259,7 +231,7 @@ def merge_pdfs(paths_in_order: List[str], output_path: str) -> str:
     opened_docs: List[PDFDocument] = []
     try:
         for p in paths_in_order:
-            pdoc = PDFDocument(p)  # validate hỏng/mật khẩu ngay tại đây
+            pdoc = PDFDocument(p)  
             opened_docs.append(pdoc)
             merged.insert_pdf(pdoc.raw)
         _safe_save(merged, output_path)
@@ -271,8 +243,7 @@ def merge_pdfs(paths_in_order: List[str], output_path: str) -> str:
 
 
 def rotate_page_angle(current_rotation: int, direction: str) -> int:
-    """Tính góc xoay mới thuần túy (không đụng file). direction = 'left' | 'right',
-    mỗi lần ±90°, luôn trả về giá trị chuẩn hóa trong {0, 90, 180, 270}."""
+
     if direction not in ("left", "right"):
         raise ValueError("direction phải là 'left' hoặc 'right'")
     delta = -90 if direction == "left" else 90
@@ -284,12 +255,6 @@ def rotate_page_angle(current_rotation: int, direction: str) -> int:
 # =============================================================================
 
 class PageEditSession:
-    """Giữ trạng thái chỉnh sửa 1 file trong bộ nhớ cho tính năng Edit: thứ tự trang hiện
-    tại, góc xoay tạm từng trang, tập hợp trang đang đánh dấu xóa.
-
-    KHÔNG ghi file ở bất kỳ method nào trừ apply() — đúng nguyên tắc "gộp mọi thao tác
-    thành 1 lần ghi file duy nhất khi bấm Áp dụng".
-    """
 
     def __init__(self, path: str) -> None:
         self.path = path
@@ -307,8 +272,7 @@ class PageEditSession:
         return list(self._order)
 
     def reorder(self, new_order: List[int]) -> None:
-        """Cập nhật thứ tự trang sau khi kéo-thả. new_order phải là hoán vị của
-        thứ tự đang hiển thị hiện tại (không được thêm/bớt phần tử qua đường này)."""
+
         if sorted(new_order) != sorted(self._order):
             raise ValueError("new_order phải là hoán vị của thứ tự trang đang hiển thị")
         self._order = list(new_order)
@@ -329,18 +293,15 @@ class PageEditSession:
         return page_id in self._marked
 
     def delete_marked(self) -> None:
-        """Xóa các trang đang đánh dấu khỏi danh sách hiển thị — chỉ trong bộ nhớ,
-        chưa ghi ra file (phím Delete gọi hàm này)."""
+
         self._order = [i for i in self._order if i not in self._marked]
         self._marked.clear()
 
     def get_pending_rotation(self, page_id: int) -> int:
-        """Góc xoay tạm hiện tại của 1 trang — PageRenderer dùng để render đúng preview."""
         return self._rotations.get(page_id, 0)
 
     def apply(self, output_path: str) -> str:
-        """Ghi file thật 1 lần duy nhất: áp dụng thứ tự mới + góc xoay tạm, bỏ các trang
-        đã xóa khỏi danh sách hiển thị."""
+
         new_doc = fitz.open()
         try:
             with PDFDocument(self.path) as doc:
@@ -362,21 +323,8 @@ class PageEditSession:
         self._marked.clear()
 
     # ------------------------------------------------------------------
-    # BỔ SUNG THUẦN MỚI (không sửa bất kỳ dòng nào ở trên) — phục vụ Undo/Redo
-    # thật của Edit khi nối `src/undo_manager.py`. Lý do cần thêm 2 method này:
-    # `reorder()` ở trên CHỈ chấp nhận `new_order` là hoán vị của thứ tự ĐANG hiển
-    # thị hiện tại, nên không thể dùng để khôi phục lại 1 trang đã bị Xóa (vì
-    # `delete_marked()` đã loại hẳn khỏi self._order — không còn nằm trong "thứ tự
-    # đang hiển thị" để mà hoán vị nữa). Undo sau thao tác Xóa cần ghi đè THẲNG toàn
-    # bộ trạng thái (order/rotations/marked) về đúng 1 snapshot đã tồn tại trước đó
-    # — đây là việc `reorder()`/`toggle_mark()`/... không làm được, không phải do
-    # chúng sai, mà do đúng bản chất khác nhau (sửa 1 phần theo luật nghiệp vụ, so
-    # với ghi đè toàn bộ không validate).
-    # ------------------------------------------------------------------
     def snapshot(self) -> dict:
-        """Chụp lại toàn bộ trạng thái hiện tại (thứ tự, góc xoay tạm mọi trang gốc,
-        tập hợp đang đánh dấu xóa) — `UndoManager` (src/undo_manager.py) lưu lại
-        đúng dữ liệu này sau mỗi thao tác Move/Xoay/Xóa hoàn tất."""
+
         return {
             "order": list(self._order),
             "rotations": dict(self._rotations),
@@ -384,20 +332,13 @@ class PageEditSession:
         }
 
     def restore(self, snapshot: dict) -> None:
-        """Ghi đè toàn bộ trạng thái về đúng 1 snapshot đã chụp trước đó (dùng khi
-        Undo/Redo). Không validate gì thêm vì snapshot truyền vào luôn là 1 trạng
-        thái hợp lệ đã từng tồn tại thật (do chính snapshot() ở trên tạo ra)."""
+
         self._order = list(snapshot["order"])
         self._rotations = dict(snapshot["rotations"])
         self._marked = set(snapshot["marked"])
 
 
 class InsertSession:
-    """Giữ 1 bản làm việc (working copy, trong bộ nhớ) của file B — được chèn dần qua
-    nhiều lượt trước khi lưu thật. File A chỉ đọc, không bao giờ bị thay đổi.
-
-    Mỗi lượt chèn chỉ 1 trang từ A (đã chốt đơn giản hóa — xem 02_dac_ta_tinh_nang.md mục 4).
-    """
 
     def __init__(self, path_a: str, path_b: str) -> None:
         # Validate file A trước (hỏng/mật khẩu) — không giữ mở lâu, chỉ mở lại khi cần chèn.
@@ -423,30 +364,25 @@ class InsertSession:
 
     @property
     def working_document(self) -> fitz.Document:
-        """Expose bản làm việc B — PageRenderer dùng để render trực tiếp từ đây (không phải
-        từ file path_b gốc trên đĩa) để Cột B luôn hiển thị đúng bản mới nhất sau khi chèn."""
         return self._working_b
 
     def mark_page_a(self, page_index: int) -> None:
-        """Đánh dấu 1 trang ở A cho lượt chèn hiện tại — đánh dấu trang mới sẽ tự
-        thay thế đánh dấu cũ nếu có (chỉ 1 trang tại 1 thời điểm)."""
+
         self._marked_page_a = page_index
 
     def unmark_page_a(self) -> None:
         self._marked_page_a = None
 
     def select_insert_position_b(self, page_index: int) -> None:
-        """Chọn vị trí chèn ở B — chèn vào ngay sau trang có index này.
-        Dùng -1 để chèn vào đầu file B."""
+
         self._selected_position_b = page_index
 
     def has_pending_mark(self) -> bool:
-        """True nếu đang có trang ở A được đánh dấu mà CHƯA bấm Chèn."""
+
         return self._marked_page_a is not None
 
     def perform_insert(self) -> None:
-        """Chèn trang đang đánh dấu ở A vào working copy của B, ngay sau vị trí đã chọn.
-        Sau khi xong: tự động bỏ đánh dấu ở A, sẵn sàng cho lượt kế tiếp."""
+
         if self._marked_page_a is None:
             raise ValueError("Chưa đánh dấu trang nào ở file A để chèn")
         if self._selected_position_b is None:
@@ -477,8 +413,7 @@ class InsertSession:
             self._working_b = None
 
 # =============================================================================
-# 6. Bảo vệ PDF (Protection) — CHỈ BỔ SUNG, không sửa mục 1-5 phía trên.
-#    Xem 07_dac_ta_chot_bao_ve_va_watermark.md mục 2 + 02_dac_ta_tinh_nang.md mục 6.
+# 6. Bảo vệ PDF (Protection) 
 # =============================================================================
 
 class WrongPasswordError(Exception):
@@ -490,36 +425,19 @@ _ALL_PERMISSION_BITS = (
     | fitz.PDF_PERM_ANNOTATE | fitz.PDF_PERM_FORM | fitz.PDF_PERM_ACCESSIBILITY
     | fitz.PDF_PERM_ASSEMBLE | fitz.PDF_PERM_PRINT_HQ
 )
-"""Gộp toàn bộ 8 cờ quyền hạn chuẩn của PyMuPDF — dùng làm mặt nạ so sánh để phát hiện
-'file có giới hạn quyền hay không', KHÔNG so sánh trực tiếp doc.permissions với -1: đã
-kiểm chứng thực tế PyMuPDF trả về permissions = -4 (không phải -1) cho 1 file hoàn toàn
-không hề được bảo vệ (do 2 bit thấp nhất trong permission luôn dự trữ = 0 theo chuẩn
-PDF), nên phải AND với mặt nạ này rồi so khớp thay vì tin vào 1 giá trị "đầy đủ" cố định."""
-
 
 @dataclass
 class ProtectionStatus:
-    """Trạng thái bảo vệ của 1 file — widget Bảo vệ dùng để quyết định luồng gỡ mật khẩu
-    (xem 07_...md mục 2.5): cần hỏi mật khẩu, hay chỉ cần hỏi xác nhận, hay không có gì để gỡ.
-
-    LƯU Ý QUAN TRỌNG (đã kiểm chứng thực tế, khác trực giác ban đầu): khi file chỉ có
-    Owner Password và User Password để trống, `fitz.open()` tự động authenticate thành
-    công bằng chuỗi rỗng NGAY LÚC MỞ — khiến `doc.is_encrypted` lập tức trả về False dù
-    file thực sự có giới hạn quyền. Vì vậy KHÔNG dùng `is_encrypted` để phát hiện trường
-    hợp owner-only — phải dùng `has_permission_restriction` (dựa trên bitmask
-    `doc.permissions`) như dưới đây."""
     needs_password: bool               # True: file có User Password, bắt buộc nhập đúng mới đọc được
     has_permission_restriction: bool   # True: có giới hạn quyền (Owner Password) dù mở tự do được
     is_protected: bool                 # needs_password OR has_permission_restriction — tiện UI kiểm tra nhanh
 
 
 def calculate_password_strength(password: str) -> int:
-    """Heuristic thuần Python (không phụ thuộc PyMuPDF) để UI vẽ thanh đỏ-vàng-xanh
-    'Độ mạnh mật khẩu' (07_...md mục 2.2). Trả điểm 0-100, chỉ mang tính gợi ý trực quan,
-    không phải phép đo entropy thực sự."""
+
     if not password:
         return 0
-    score = min(len(password) * 6, 40)  # độ dài đóng góp tối đa 40 điểm
+    score = min(len(password) * 6, 40)  
     if any(c.islower() for c in password):
         score += 15
     if any(c.isupper() for c in password):
@@ -532,12 +450,7 @@ def calculate_password_strength(password: str) -> int:
 
 
 def build_protection_permissions(cam_in: bool, cam_chinh_sua: bool, cam_sao_chep: bool) -> int:
-    """Tính bitmask cho tham số `permissions=` của fitz — đúng ánh xạ đã chốt ở
-    07_...md mục 2.3. LƯU Ý NGHĨA THAM SỐ: giá trị nhận vào đúng theo checkbox trên UI
-    (True = đang tick = đang CẤM hành động đó), không phải 'có cho phép hay không'.
 
-    fitz.PDF_PERM_ACCESSIBILITY luôn được set, không phụ thuộc checkbox nào (quyền dành
-    cho phần mềm đọc màn hình hỗ trợ người khiếm thị)."""
     perm = fitz.PDF_PERM_ACCESSIBILITY
     if not cam_in:
         perm |= fitz.PDF_PERM_PRINT
@@ -549,44 +462,14 @@ def build_protection_permissions(cam_in: bool, cam_chinh_sua: bool, cam_sao_chep
 
 
 def _generate_owner_secret() -> str:
-    """Sinh 1 chuỗi bí mật ngẫu nhiên dùng làm Owner Password nội bộ — KHÔNG hiển thị,
-    KHÔNG lưu lại, KHÔNG cần dùng lại về sau (chỉ tồn tại trong đúng 1 lần gọi
-    protect_pdf()). Dùng `secrets` (module chuẩn Python, không phải thư viện ngoài —
-    đúng quy ước dự án chỉ dùng PySide6/PyMuPDF/PyInstaller).
 
-    LÝ DO CẦN HÀM NÀY (đã sửa sau khi đại ca phát hiện lỗi thực tế qua kiểm thử — xem
-    lịch sử trao đổi): bản chốt ban đầu ở 02_dac_ta_tinh_nang.md mục 6.2 truyền CÙNG 1
-    giá trị mật khẩu cho cả user_pw và owner_pw. Theo chuẩn PDF, phần mềm đọc PDF hợp
-    chuẩn (Acrobat, Foxit...) khi nhận 1 mật khẩu sẽ thử khớp cả 2 khoá /U và /O trong
-    file — khớp /O (Owner) thì MIỄN TRỪ HOÀN TOÀN mọi giới hạn quyền hạn (đúng tinh thần
-    chuẩn PDF: chủ sở hữu luôn được coi là không bị giới hạn trên chính file của họ).
-    Vì chỉ có đúng 1 mật khẩu duy nhất để thử, mật khẩu đó LUÔN khớp /O trước tiên →
-    3 checkbox Cấm In/Sửa/Copy hoàn toàn vô tác dụng với MỌI người mở file bằng phần mềm
-    đọc PDF chuẩn, kể cả không có ý định bẻ khóa gì cả — khác hẳn rủi ro "dùng qpdf/pikepdf
-    để cố tình gỡ" đã nêu ở mục 6.4 (rủi ro đó vẫn còn, không liên quan gì đến lỗi này).
-
-    Cách sửa: giữ user_pw = đúng mật khẩu người dùng nhập (không đổi gì ở UI/luồng nhập
-    liệu), còn owner_pw đổi thành 1 chuỗi ngẫu nhiên nội bộ khác hẳn user_pw. Người nhận
-    file chỉ có đúng 1 mật khẩu (mật khẩu đã đặt) nên luôn được xác thực là User, không
-    phải Owner → permission bits có tác dụng thật với phần mềm đọc PDF chuẩn."""
     return secrets.token_hex(16)
 
 
 def protect_pdf(path: str, output_path: str, password: str,
                  cam_in: bool = False, cam_chinh_sua: bool = False,
                  cam_sao_chep: bool = False) -> str:
-    """Đặt mật khẩu (AES-256, cố định — 07_...md mục 2.1) + permission cho 1 file PDF,
-    xuất ra file MỚI, không ghi đè file gốc.
 
-    ĐÃ SỬA (xem _generate_owner_secret() ở trên để biết đầy đủ lý do): `user_pw` = đúng
-    `password` người dùng nhập (UI vẫn chỉ 1 ô, không đổi gì cho người dùng). `owner_pw`
-    KHÔNG còn giống `user_pw` nữa — dùng 1 chuỗi ngẫu nhiên tự sinh nội bộ, chỉ tồn tại
-    trong đúng lần gọi này, để tránh người mở file luôn bị coi là Owner (mất tác dụng
-    permission). Đây là khác biệt DUY NHẤT so với bản chốt gốc ở 02_dac_ta_tinh_nang.md
-    mục 6.2 — mọi hành vi khác (AES-256, UI 1 ô, ánh xạ 3 checkbox...) giữ nguyên.
-
-    File nguồn phải là file KHÔNG có mật khẩu sẵn (đi qua PDFDocument như mọi tính năng
-    khác — nếu cần bảo vệ lại 1 file đã có mật khẩu, phải Gỡ mật khẩu trước)."""
     if not password:
         raise ValueError("Mật khẩu không được để trống")
 
@@ -609,12 +492,7 @@ def protect_pdf(path: str, output_path: str, password: str,
 
 
 def get_protection_status(path: str) -> ProtectionStatus:
-    """Kiểm tra 1 file có đang được bảo vệ không, và có cần nhập mật khẩu mở hay không.
 
-    CỐ TÌNH mở bằng `fitz.open()` trực tiếp thay vì qua PDFDocument — vì PDFDocument
-    luôn raise PasswordProtectedError ngay khi needs_pass=True (đúng thiết kế bắt buộc
-    cho Tách/Gộp/Edit/Chèn). Riêng Bảo vệ/Gỡ mật khẩu cần tự mở được file có mật khẩu
-    nên phải tự quản lý việc mở file ở đây, không tái sử dụng PDFDocument."""
     try:
         doc = fitz.open(path)
     except Exception as exc:
@@ -634,22 +512,7 @@ def get_protection_status(path: str) -> ProtectionStatus:
 
 
 def remove_password(path: str, output_path: str, password: Optional[str] = None) -> str:
-    """Gỡ mật khẩu + mọi permission, xuất file MỚI hoàn toàn không còn mã hoá
-    (07_...md mục 2.5). KHÔNG ghi đè file gốc.
 
-    LƯU Ý (đã xác nhận với đại ca): vì permission bits nằm chung trong encryption
-    dictionary với password, `doc.save(..., encryption=PDF_ENCRYPT_NONE)` xoá cả 2 CÙNG
-    LÚC — không có khái niệm "chỉ gỡ mật khẩu, giữ nguyên giới hạn quyền". File kết quả
-    sau khi gỡ luôn mở tự do VÀ In/Sửa/Copy đều dùng được bình thường, đúng ý nghĩa
-    "hoàn toàn không còn mã hoá" đã chốt — không cần sửa gì thêm ở hàm này.
-
-    - File cần User Password (needs_pass=True): bắt buộc truyền đúng `password` —
-      sai sẽ raise WrongPasswordError để widget báo lỗi ngay tại ô nhập.
-    - File chỉ có Owner Password (needs_pass=False nhưng is_encrypted=True): không cần
-      `password` — widget phải tự hỏi xác nhận người dùng TRƯỚC KHI gọi hàm này (xem
-      get_protection_status để widget biết khi nào cần hỏi gì).
-    - File không hề được mã hoá: vẫn xuất ra bản sao bình thường, không lỗi.
-    """
     try:
         doc = fitz.open(path)
     except Exception as exc:
@@ -671,28 +534,10 @@ def remove_password(path: str, output_path: str, password: Optional[str] = None)
 
 
 # -----------------------------------------------------------------------------
-# 6b. Phiên xem trước + Mở khóa (Unlock) — CHỈ BỔ SUNG, không sửa 3 hàm ở trên.
-#
-# Lý do cần lớp riêng thay vì gọi thẳng remove_password(): remove_password() mở file,
-# xác thực, LƯU và ĐÓNG file trong đúng 1 lần gọi — không giữ lại fitz.Document đang mở
-# để UI render Cột B trước khi người dùng bấm "Lưu File". Lớp này giữ đúng 1
-# fitz.Document đã authenticate() thành công trong bộ nhớ, để widget dùng
-# render_document_page() (mục 8 bên dưới, vốn đã có sẵn dùng chung cho Chèn file)
-# render preview, rồi mới gọi save_unlocked() khi người dùng bấm Lưu File — đúng tinh
-# thần InsertSession (mục 5) giữ working_document trong bộ nhớ trước khi ghi ra đĩa.
+# 6b. Phiên xem trước + Mở khóa (Unlock) 
 # -----------------------------------------------------------------------------
 
 class UnlockPreviewSession:
-    """Áp dụng đúng luồng đã chốt (02_dac_ta_tinh_nang.md mục 6.5):
-    - File có User Password (needs_pass=True): PHẢI gọi authenticate(password) thành
-      công mới được render/lưu — sai mật khẩu trả về False, KHÔNG raise, để widget tự
-      hiện lỗi ngay tại ô nhập (đáp ứng yêu cầu "không render Cột B" cho tới khi đúng).
-    - File chỉ có Owner Password (needs_pass=False): coi như đã sẵn sàng ngay từ lúc mở
-      (is_ready = True ngay, không cần gọi authenticate()) — đúng đặc tả case 3: file
-      tự mở đọc được, không cần mật khẩu.
-
-    save_unlocked() dùng cùng cơ chế PDF_ENCRYPT_NONE như remove_password() — gỡ cả
-    mật khẩu lẫn mọi giới hạn quyền hạn cùng lúc (xem chú thích ở remove_password())."""
 
     def __init__(self, path: str) -> None:
         self.path = path
@@ -701,8 +546,7 @@ class UnlockPreviewSession:
         except Exception as exc:
             raise CorruptedFileError(f"Không thể mở file: {path}") from exc
         self._needs_password = self._doc.needs_pass
-        # Trường hợp không cần User Password (không mật khẩu, hoặc chỉ owner-only):
-        # coi như đã sẵn sàng render ngay, không phải chờ nhập gì thêm.
+
         self._authenticated = not self._needs_password
 
     @property
@@ -754,13 +598,10 @@ class UnlockPreviewSession:
 
 
 # =============================================================================
-# 7. Chèn Watermark — CHỈ BỔ SUNG, không sửa mục 1-5 phía trên.
-#    Xem 07_dac_ta_chot_bao_ve_va_watermark.md mục 1.
+# 7. Chèn Watermark 
 # =============================================================================
 
 SEGOE_UI_FONT_PATH = r"C:\Windows\Fonts\segoeui.ttf"
-"""Font cố định cho watermark chữ — đã chốt 07_...md mục 1.1. Có sẵn trên mọi máy
-Windows, hỗ trợ đầy đủ dấu tiếng Việt, không cần đóng gói/redistribute riêng."""
 
 _watermark_font_cache: Dict[str, "fitz.Font"] = {}
 
@@ -770,9 +611,7 @@ class FontNotFoundError(Exception):
 
 
 def _get_watermark_font(fontfile: str = SEGOE_UI_FONT_PATH) -> "fitz.Font":
-    """Nạp font 1 lần rồi cache lại — dùng `fitz.Font` (không dùng hàm rời
-    `fitz.get_text_length`, vì hàm này từng đổi tên/behavior giữa các bản PyMuPDF khác
-    nhau — `fitz.Font.text_length()` ổn định hơn và dùng được thẳng cho TextWriter)."""
+
     cached = _watermark_font_cache.get(fontfile)
     if cached is not None:
         return cached
@@ -789,16 +628,16 @@ class TextWatermarkConfig:
     """Cấu hình watermark dạng chữ — 1-1 với các control ở Cột A của watermark_widget.py."""
     text: str
     font_size: int
-    color_rgb: Tuple[float, float, float]  # mỗi giá trị 0.0-1.0 (chuẩn màu của PyMuPDF)
-    opacity: float          # 0.0 - 1.0
-    rotation: float         # độ, 0-360 tuỳ ý (không giới hạn bội số 90)
-    layer_over: bool        # True = Foreground (đè lên nội dung), False = Background (nằm dưới)
-    fontfile: str = SEGOE_UI_FONT_PATH  # cố định Segoe UI theo 07_...md — không cho UI đổi
+    color_rgb: Tuple[float, float, float]  
+    opacity: float         
+    rotation: float        
+    layer_over: bool        
+    fontfile: str = SEGOE_UI_FONT_PATH  
 
 
 @dataclass
 class ImageWatermarkConfig:
-    """Cấu hình watermark dạng ảnh — 1-1 với các control ở Cột A của watermark_widget.py."""
+
     image_path: str
     scale_percent: float    # % so với kích thước gốc của ảnh
     opacity: float          # 0.0 - 1.0
@@ -807,18 +646,7 @@ class ImageWatermarkConfig:
 
 
 def draw_text_watermark_centered(page: "fitz.Page", config: TextWatermarkConfig) -> None:
-    """Vẽ watermark chữ dạng "1 dấu lớn duy nhất giữa trang" lên 1 page ĐÃ MỞ SẴN — hàm
-    này không tự save, apply_watermark_to_pdf() chịu trách nhiệm ghi file 1 lần cho cả
-    tài liệu.
 
-    THAY ĐỔI so với bản Tiling trước đó (đại ca đã yêu cầu đảo ngược quyết định ở
-    02_dac_ta_tinh_nang.md mục 7.3): vẽ 1 watermark duy nhất tại chính giữa trang thay
-    vì lặp nhiều bản phủ toàn trang, để tiết kiệm tài nguyên tính toán/vẽ (không còn
-    vòng lặp _tile_positions) và giảm số lượng TextWriter phải khởi tạo trên mỗi trang.
-
-    Vẫn BẮT BUỘC dùng `fitz.TextWriter` (không dùng `page.insert_text()` đơn giản) vì
-    `insert_text()` chỉ nhận `rotate` là bội số 90° — không đáp ứng được slider góc xoay
-    0-360° tuỳ ý đã chốt."""
     font = _get_watermark_font(config.fontfile)
     text_width = font.text_length(config.text, fontsize=config.font_size)
     text_height = config.font_size * 1.2  # hệ số dòng ước lượng, đủ dùng để canh giữa
@@ -838,58 +666,20 @@ def draw_text_watermark_centered(page: "fitz.Page", config: TextWatermarkConfig)
 
 
 def _apply_opacity_to_pixmap(pixmap: "fitz.Pixmap", opacity: float) -> "fitz.Pixmap":
-    """Nhân kênh alpha hiện có với hệ số `opacity` (0.0-1.0). Cần bước này vì
-    `page.insert_image()` của PyMuPDF KHÔNG có tham số opacity trực tiếp như
-    `TextWriter.write_text()` — muốn slider Opacity của watermark ảnh có tác dụng thì
-    phải tự làm mờ ngay trên dữ liệu pixel trước khi chèn.
 
-    LƯU Ý QUAN TRỌNG (đã kiểm chứng thực tế bằng test, khác trực giác ban đầu):
-    `pixmap.n` của PyMuPDF đã BAO GỒM SẴN kênh alpha khi `pixmap.alpha=True` (VD ảnh RGB
-    có alpha thì `n=4`, không phải `n=3` rồi cộng riêng 1 cho alpha) — nên `stride` giữa
-    2 pixel liên tiếp = `pixmap.n`, và alpha luôn là byte CUỐI mỗi pixel, tức offset
-    `pixmap.n - 1`, KHÔNG PHẢI `pixmap.n`."""
     if not pixmap.alpha:
         pixmap = fitz.Pixmap(pixmap, 1)
     samples = bytearray(pixmap.samples)
     stride = pixmap.n            # đã bao gồm kênh alpha
     alpha_offset = pixmap.n - 1  # alpha luôn là byte cuối cùng của mỗi pixel
-    for i in range(alpha_offset, len(samples), stride):
-        samples[i] = int(samples[i] * opacity)
+    alpha_bytes = samples[alpha_offset::stride]
+    samples[alpha_offset::stride] = bytes(int(b * opacity) for b in alpha_bytes)
     return fitz.Pixmap(pixmap.colorspace, pixmap.width, pixmap.height, bytes(samples), True)
 
 
 def _rotate_image_to_pixmap(image_path: str, rotation_degrees: float,
                              opacity: float) -> "fitz.Pixmap":
-    """'Bake' góc xoay tuỳ ý + opacity vào ảnh bằng chính PyMuPDF (không dùng Pillow —
-    đúng quy ước dự án). Trả về thẳng đối tượng `fitz.Pixmap` đã xoay/áp opacity (KHÔNG
-    còn trả PNG bytes như bản trước — xem lý do ở điểm 2 bên dưới).
 
-    Kỹ thuật (07_...md mục 1.4.2): dựng 1 trang PDF tạm chỉ chứa ảnh gốc, sau đó render
-    lại trang này qua `get_pixmap(matrix=...)` với ma trận đã prerotate — giữ nguyên
-    alpha xuyên suốt để nền không bị trắng đè lên.
-
-    HAI ĐIỂM ĐÃ SỬA (phát hiện qua kiểm thử thực tế bằng PyMuPDF + đối chiếu render độc
-    lập bằng Poppler `pdftoppm`, sau khi đại ca báo watermark ảnh bị sai cả góc xoay lẫn
-    màu sắc so với Text — xem trao đổi ngày cập nhật gần nhất):
-
-    1. **ĐẢO DẤU góc xoay trước khi đưa vào `Matrix.prerotate()`** (dòng
-       `rotate_matrix = ...prerotate(-rotation_degrees)` bên dưới). Đã kiểm chứng bằng
-       script test độc lập: `TextWriter.morph` (dùng cho Text) và
-       `Page.get_pixmap(matrix=...)` (dùng để bake ảnh) tuy cùng nhận vào 1
-       `fitz.Matrix.prerotate(+D)` nhưng lại xoay THEO 2 HƯỚNG NGƯỢC NHAU trên trang —
-       Text với +30° lệch ngược chiều kim đồng hồ (khớp đúng preview Qt), còn ảnh với
-       CÙNG +30° lại lệch THUẬN chiều kim đồng hồ. Đây chính là nguyên nhân ảnh bị "sai
-       góc quay" trong khi Text vẫn đúng. Đảo dấu ở đây để ảnh xoay cùng chiều với Text
-       và preview, dùng đúng 1 quy ước `config.rotation` cho cả 2 loại watermark.
-    2. **Trả thẳng `Pixmap` thay vì PNG bytes** — bản trước gọi thêm
-       `rotated_pixmap.tobytes("png")` rồi `draw_image_watermark_centered` chèn bằng
-       `stream=`. Test riêng cho thấy `Pixmap.save()`/`tobytes("png")` của PyMuPDF ghi
-       PNG với RGB đã bị nhân sẵn alpha (premultiplied) nhưng header PNG vẫn khai
-       "non-premultiplied" — không đúng chuẩn PNG, dù trong trường hợp cụ thể đã test
-       (khối màu đặc + xoay, đối chiếu Poppler) chưa thấy sai lệch màu thật sự trong file
-       PDF cuối do PyMuPDF tự nhất quán khi tách RGB/SMask lúc nhúng ảnh vào PDF. Để an
-       toàn về lâu dài (không phụ thuộc hành vi nội bộ này của PyMuPDF ở các phiên bản
-       khác), bỏ hẳn bước mã hoá PNG trung gian, chèn thẳng đối tượng Pixmap."""
     try:
         pixmap_src = fitz.Pixmap(image_path)
     except Exception as exc:
@@ -916,19 +706,13 @@ def _rotate_image_to_pixmap(image_path: str, rotation_degrees: float,
         tmp_doc.close()
 
 
-def draw_image_watermark_centered(page: "fitz.Page", config: ImageWatermarkConfig) -> None:
-    """Vẽ watermark ảnh dạng "1 dấu lớn duy nhất giữa trang" lên 1 page ĐÃ MỞ SẴN — hàm
-    này không tự save, apply_watermark_to_pdf() chịu trách nhiệm ghi file 1 lần cho cả
-    tài liệu.
+def draw_image_watermark_centered(page: "fitz.Page", config: ImageWatermarkConfig,
+                                   rotated_pixmap: Optional["fitz.Pixmap"] = None) -> None:
 
-    THAY ĐỔI so với bản Tiling trước đó (xem chú thích ở draw_text_watermark_centered):
-    chỉ chèn 1 lần duy nhất tại chính giữa trang.
-
-    Vẫn phải "bake" góc xoay vào ảnh trước (xem _rotate_image_to_pixmap) vì
-    `page.insert_image()` chỉ nhận `rotate` là bội số 90°, giống hệt lý do với Text."""
-    rotated_pixmap = _rotate_image_to_pixmap(
-        config.image_path, config.rotation, config.opacity
-    )
+    if rotated_pixmap is None:
+        rotated_pixmap = _rotate_image_to_pixmap(
+            config.image_path, config.rotation, config.opacity
+        )
     scale = config.scale_percent / 100.0
     item_w = rotated_pixmap.width * scale
     item_h = rotated_pixmap.height * scale
@@ -945,39 +729,33 @@ def draw_image_watermark_centered(page: "fitz.Page", config: ImageWatermarkConfi
 def apply_watermark_to_pdf(path: str, output_path: str,
                             text_config: Optional[TextWatermarkConfig] = None,
                             image_config: Optional[ImageWatermarkConfig] = None) -> str:
-    """Áp watermark (đúng 1 trong 2: Text HOẶC Image, theo mode đang chọn trên UI) — 1
-    dấu lớn duy nhất tại giữa mỗi trang — lên MỌI trang của file, xuất ra file MỚI —
-    không ghi đè file gốc (tuân theo quy ước chung 02_dac_ta_tinh_nang.md mục 0)."""
+
     if bool(text_config) == bool(image_config):
         raise ValueError("Phải truyền đúng 1 trong 2: text_config hoặc image_config")
+
+    precomputed_image_pixmap: Optional["fitz.Pixmap"] = None
+    if image_config is not None:
+        precomputed_image_pixmap = _rotate_image_to_pixmap(
+            image_config.image_path, image_config.rotation, image_config.opacity
+        )
 
     with PDFDocument(path) as doc:
         for page in doc.raw:
             if text_config is not None:
                 draw_text_watermark_centered(page, text_config)
             else:
-                draw_image_watermark_centered(page, image_config)
+                draw_image_watermark_centered(page, image_config, precomputed_image_pixmap)
         _safe_save(doc.raw, output_path)
     return output_path
 
 
 # =============================================================================
-# 8. Hỗ trợ render riêng cho Chèn file (Insert) — CHỈ BỔ SUNG, không sửa gì ở trên.
-#    Lý do: InsertSession.working_document là 1 fitz.Document ĐANG MỞ TRONG BỘ NHỚ,
-#    chưa từng ghi ra đĩa sau mỗi lượt chèn — PageRenderer (mục 2) chỉ nhận `path: str`
-#    và luôn mở lại qua PDFDocument(path) nên KHÔNG dùng được để render bản làm việc
-#    này. Hàm này hoàn toàn mới, không đụng PageRenderer, để tuyệt đối an toàn cho
-#    Tách file / Gộp file / Edit đang phụ thuộc PageRenderer.
+# 8. Hỗ trợ render riêng cho Chèn file (Insert) 
 # =============================================================================
 
 def render_document_page(doc: fitz.Document, page_index: int, target_width: int = 160,
                           pending_rotation: int = 0) -> bytes:
-    """Render 1 trang thành PNG bytes trực tiếp từ 1 fitz.Document ĐÃ MỞ SẴN (không
-    qua path/PDFDocument) — dùng riêng cho insert_widget.py khi render Cột B từ
-    `InsertSession.working_document` (bản làm việc chỉ tồn tại trong bộ nhớ).
 
-    KHÔNG cache (khác PageRenderer): nội dung `doc` đổi liên tục sau mỗi lượt chèn,
-    cache theo kiểu PageRenderer (key theo path) sẽ trả nhầm ảnh cũ."""
     page = doc[page_index]
     if pending_rotation:
         page.set_rotation((page.rotation + pending_rotation) % 360)
@@ -988,22 +766,13 @@ def render_document_page(doc: fitz.Document, page_index: int, target_width: int 
 
 
 # -----------------------------------------------------------------------------
-# 8b. Tiện ích đọc metadata trực tiếp từ 1 fitz.Document ĐANG MỞ trong bộ nhớ —
-# CHỈ BỔ SUNG, cùng nguyên lý với render_document_page() ở trên. Cần thêm 2 hàm nhỏ
-# này để protect_feature_widget.py (tab Mở khóa, dùng UnlockPreviewSession — mục 6b)
-# KHÔNG phải tự import/đụng fitz trực tiếp (đúng nguyên tắc "widget chỉ gọi hàm từ
-# pdf_core.py", xem 04_kien_truc_module_va_flow.md mục "Nguyên tắc chung").
+# 8b. Tiện ích đọc metadata trực tiếp từ 1 fitz.Document
 # -----------------------------------------------------------------------------
 
 def get_document_page_count(doc: fitz.Document) -> int:
-    """Số trang của 1 fitz.Document ĐÃ MỞ SẴN — dùng khi tài liệu chỉ tồn tại tạm trong
-    bộ nhớ (VD file vừa authenticate() nhưng chưa lưu ra đĩa), nên get_page_count(path)
-    (mục 2, chỉ nhận path) không dùng được."""
     return doc.page_count
 
 
 def get_document_page_size(doc: fitz.Document, page_index: int) -> Tuple[float, float]:
-    """(width, height) của 1 trang, đọc trực tiếp từ fitz.Document ĐÃ MỞ SẴN — cùng lý
-    do với get_document_page_count() ở trên."""
     rect = doc[page_index].rect
     return (rect.width, rect.height)

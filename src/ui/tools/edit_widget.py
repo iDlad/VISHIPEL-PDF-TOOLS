@@ -1,50 +1,5 @@
 """
-Giao diện tính năng Edit File — bố cục theo khuôn mẫu split_widget.py, đã nối logic
-thật vào pdf_core.PageEditSession + src/undo_manager.UndoManager theo
-02_dac_ta_tinh_nang.md mục 3 và 04_kien_truc_module_va_flow.md mục 2/5.
-
-Bố cục 2 cột (A ~55% - B ~45%):
-- Cột A: A1 khối chọn file (chỉ 1 file) + A3 khung chứa tiêu đề, vạch đích "đầu file"
-  (luôn hiển thị, chỉ có tác dụng khi đang Move) và lưới thumbnail 3 cột (ảnh render
-  thật qua pdf_core.PageRenderer).
-- Chuột phải vào 1 trang (không có lượt Move nào đang chạy, chưa bị đánh dấu Xóa):
-  menu "Xoay trái 90° / Xoay phải 90° / Move".
-- Bấm "Move" → trang đó chuyển trạng thái "cut" (mờ xám, giống Cut file Windows); mọi
-  thumbnail khác + vạch đầu file chuyển menu chuột phải còn "Move đến đây" / "Hủy Move".
-  Click trái 1 thumbnail khác (hoặc vạch đầu file) để đặt "vạch đỏ" (đích chèn) + xem
-  preview; chuột phải ĐÚNG vị trí đang giữ vạch đỏ → "Move đến đây" để xác nhận
-  (2 bước tách biệt, KHÔNG gộp — bắt buộc phải click trái xác định vị trí trước).
-- Trang đã đánh dấu Xóa không được chọn làm nguồn Move (menu ẩn mục "Move").
-- Mỗi lượt Move chỉ áp dụng đúng 1 trang; mỗi lần Move hoàn tất đăng ký 1 bước Undo
-  thật vào `src/undo_manager.UndoManager` (snapshot trước/sau thao tác).
-- Bật checkbox "Xóa" toàn cục → chuột phải toggle đánh dấu (viền đỏ, chỉ là trạng thái
-  UI + PageEditSession.toggle_mark(), CHƯA tính là 1 bước Undo) → nhấn phím Delete để
-  thực sự xóa các trang đang đánh dấu khỏi lưới (PageEditSession.delete_marked(),
-  CHỈ lúc này mới đăng ký 1 bước Undo). Nếu bấm "Lưu File" mà VẪN CÒN trang đang đánh
-  dấu (dù đã bấm Delete hay chưa, dù checkbox đang bật hay đã tắt) — hệ thống TỰ ĐỘNG
-  xóa các trang đó trước khi ghi file, đảm bảo file kết quả không bao giờ còn sót
-  trang đã đánh dấu (đã xác nhận với đại ca — không phải sinh ra thao tác Undo riêng
-  cho việc này, chỉ tái dùng đúng luồng xóa đã có: `_delete_marked_pages()`).
-- Hàng thao tác dưới cùng: Nhãn "Xóa" + checkbox → Undo + Redo → Clear → Lưu File.
-- Cột B: khung preview cuộn liên tục nhiều trang (ảnh render thật qua PageRenderer),
-  re-render lại theo đúng thứ tự mới sau mỗi lần Move. Zoom In/Out (±15%, 50%-200%,
-  mặc định 100% = vừa khít khung) + pan chuột trái khi đã zoom to hơn khung.
-- Lưu File: dùng `_OverwriteConfirmDialog` tự vẽ (đồng bộ style dialog trùng tên của
-  Gộp file) thay cho cảnh báo ghi đè mặc định của Windows (đã tắt qua
-  `QFileDialog.Option.DontConfirmOverwrite` để không hỏi 2 lần cùng 1 việc — đúng cách
-  Chèn file đã làm). Sau khi lưu thành công, tự động mở thư mục chứa file kết quả
-  (`QDesktopServices`), giống Tách file/Chèn file.
-
-Toàn bộ logic PDF thật: chỉ gọi qua `pdf_core.py` (PageEditSession, PageRenderer) —
-widget không tự xử lý PDF, đúng nguyên tắc chung ở 04_kien_truc_module_va_flow.md.
-Undo/Redo: `src/undo_manager.UndoManager` — độc lập hoàn toàn với `src/undo_logic.py`
-(InsertUndoManager, dùng riêng cho Chèn file).
-
-Original_id của mỗi `_EditPageThumbnail` / preview frame = `source_index` GỐC (0-based)
-trong file PDF ban đầu — CỐ ĐỊNH suốt vòng đời widget (khớp `page_id` mà PageEditSession
-dùng cho rotate()/toggle_mark()/get_pending_rotation()). Badge số trên thumbnail Cột A
-là VỊ TRÍ hiển thị hiện tại (1..N, không có ký tự "#"), được đánh lại liên tục sau mỗi
-lần Move/Undo/Redo/Xóa.
+/src/ui/tools/edit_widget.py
 """
 from __future__ import annotations
 
@@ -88,7 +43,7 @@ from src.ui.vishipel_theme import (
 
 _GRID_COLUMNS = 3
 _THUMB_SIZE = 128
-_THUMB_IMAGE_MAX = _THUMB_SIZE - 34  # chừa chỗ cho move_target_label + rotation_badge dưới ảnh
+_THUMB_IMAGE_MAX = _THUMB_SIZE - 34  
 
 # Zoom Cột B: mỗi lần bấm Zoom In/Out ±15%, giới hạn 50%-200%.
 _ZOOM_MIN = 0.5
@@ -213,9 +168,7 @@ def _primary_button_style() -> str:
 
 
 # ----------------------------------------------------------------------
-# Hộp thoại trùng tên khi Lưu File — tự vẽ, KHÔNG dùng QMessageBox mặc định, đồng bộ
-# 100% thiết kế với dialog trùng tên của Gộp file (merge_widget.py): icon cảnh báo màu
-# vàng + message 2 dòng + 3 nút Ghi đè (Accent, hành động chính) / Đổi tên khác / Hủy.
+# Hộp thoại trùng tên khi Lưu File 
 # ----------------------------------------------------------------------
 class _OverwriteConfirmDialog(QDialog):
     ACTION_OVERWRITE = "overwrite"
@@ -300,8 +253,7 @@ class _OverwriteConfirmDialog(QDialog):
 
 
 # ----------------------------------------------------------------------
-# A3 — 1 ô trong lưới thumbnail: thumbnail ảnh thật + trạng thái đánh dấu xóa / cut /
-# đích Move. Khi chế độ "Xóa" bật, chuột phải sẽ toggle đánh dấu xóa thay vì mở menu.
+# A3 — 1 ô trong lưới thumbnail
 # ----------------------------------------------------------------------
 class _EditPageThumbnail(QWidget):
     clicked = Signal(object)
@@ -731,10 +683,6 @@ class _DropZone(QFrame):
 
 
 class EditFeatureWidget(QWidget):
-    """Giao diện tính năng Edit File — đã nối logic PDF thật (pdf_core.PageEditSession),
-    Undo/Redo thật (src.undo_manager.UndoManager), dialog trùng tên tự vẽ đồng bộ Gộp
-    file, tự mở thư mục sau khi lưu, và tự động dọn trang đánh dấu Xóa còn sót khi lưu."""
-
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -837,7 +785,6 @@ class EditFeatureWidget(QWidget):
         self.thumb_grid.setAlignment(Qt.AlignTop)
 
 # --- BỔ SUNG CẤU HÌNH CỐ ĐỊNH 3 CỘT ---
-        # Ép 3 cột thumbnail không co giãn và thêm cột index 3 làm khoảng trống đệm bên phải
         for c in range(_GRID_COLUMNS):
             self.thumb_grid.setColumnStretch(c, 1)
         # ----------------------------------------
@@ -1468,10 +1415,6 @@ class EditFeatureWidget(QWidget):
 
     # ------------------------------------------------------------------
     def _delete_marked_pages(self) -> bool:
-        """Xóa thật các trang đang đánh dấu khỏi lưới (PageEditSession.delete_marked())
-        + đăng ký 1 bước Undo. Trả về True nếu có xóa thật sự (có ít nhất 1 trang được
-        đánh dấu), False nếu không có gì để xóa — dùng cho cả phím Delete VÀ luồng tự
-        động dọn khi bấm Lưu File (mục 5 yêu cầu của đại ca)."""
         if self._session is None:
             return False
         marked_thumbs = [t for t in self._thumbnails if t.is_flagged]
@@ -1504,8 +1447,6 @@ class EditFeatureWidget(QWidget):
         return True
 
     def _on_delete_key_pressed_from_ui(self) -> None:
-        # Giữ lại thông báo lỗi riêng cho phím Delete (khác luồng tự động khi Lưu File —
-        # luồng đó không cần báo lỗi vì "không có gì để xóa" là trường hợp bình thường).
         if not self._delete_marked_pages():
             self._show_error(
                 "Chưa đánh dấu trang nào để xóa (chuột phải vào trang muốn xóa khi đang bật chế độ Xóa)."
@@ -1574,9 +1515,6 @@ class EditFeatureWidget(QWidget):
             )
             return
 
-        # Yêu cầu #5: dù người dùng đã bấm phím Delete hay chưa, hễ còn trang nào đang
-        # đánh dấu Xóa lúc bấm Lưu File thì tự động xóa hẳn trước khi ghi — không báo lỗi
-        # ở đây vì "không có gì để xóa" là trạng thái bình thường trong luồng Lưu File.
         self._delete_marked_pages()
 
         if not self._session.page_order:
@@ -1599,9 +1537,6 @@ class EditFeatureWidget(QWidget):
         )
         if not save_path:
             return
-
-        # Hộp thoại trùng tên tự vẽ (3 lựa chọn) thay cho cảnh báo mặc định của Windows —
-        # lặp lại nếu người dùng chọn "Đổi tên khác" mà tên mới vẫn trùng.
         while os.path.exists(save_path):
             action = _OverwriteConfirmDialog.ask(self, os.path.basename(save_path))
             if action == _OverwriteConfirmDialog.ACTION_OVERWRITE:

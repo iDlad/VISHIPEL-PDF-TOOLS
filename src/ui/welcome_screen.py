@@ -1,7 +1,5 @@
 """
-Màn hình chào — hiển thị mặc định khi mở app, trước khi người dùng chọn bất kỳ
-tính năng nào ở sidebar (xem 01_dac_ta_giao_dien.md mục 7). Không có nút bấm
-hay thao tác nào khác trên màn hình này.
+/src/ui/welcome_screen.py
 """
 from __future__ import annotations
 
@@ -20,10 +18,6 @@ ILLUSTRATION_PATH = CURRENT_DIR / "assets" / "welcome_illustration.png"
 
 
 class WelcomeScreen(QWidget):
-    """
-    Màn hình chào thiết kế mới: Layout 2 cột (Text bên trái, Minh họa bên phải)
-    với cỡ chữ lớn và khoảng cách tối ưu.
-    """
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -88,12 +82,9 @@ class WelcomeScreen(QWidget):
             illustration_label.setStyleSheet(
                 f"color: {COLOR_TEXT_SECONDARY}; font-size: 13px;"
             )
-
-        # Thêm các Widget vào Layout chính:
-        # Dùng addStretch() ở 2 đầu để "đẩy" khối Text đến vị trí bạn muốn
-        
-        main_layout.addStretch(1)                  # 👈 Khoảng trống bên trái ngoài cùng
-        main_layout.addWidget(left_container)       # Khối Text
-        main_layout.addSpacing(40)                 # 👈 KHOẢNG CÁCH CHÍNH XÁC GIỮA TEXT VÀ ẢNH (Sửa số này để tăng/giảm)
-        main_layout.addWidget(illustration_label)  # Khối Ảnh
-        main_layout.addStretch(1)                  # 👈 Khoảng trống bên phải ngoài cùng
+     
+        main_layout.addStretch(1)                 
+        main_layout.addWidget(left_container)      
+        main_layout.addSpacing(40)                 
+        main_layout.addWidget(illustration_label)  
+        main_layout.addStretch(1)                  

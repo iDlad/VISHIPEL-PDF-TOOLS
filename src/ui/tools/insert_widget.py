@@ -1,28 +1,5 @@
 """
-Giao diện tính năng Chèn File (Insert PDF) — Vishipel PDF Tools.
-
-Đã nối logic thật với `pdf_core.InsertSession` (04_kien_truc_module_va_flow.md,
-02_dac_ta_tinh_nang.md mục 4):
-1. Chọn File A / File B qua `pdf_core.get_page_count` để validate (hỏng/mật khẩu)
-   ngay khi chọn file — không cho file lỗi vào danh sách xử lý.
-2. Khi đã có đủ 2 file, khởi tạo `InsertSession(path_a, path_b)` — giữ bản làm việc
-   của File B trong bộ nhớ, chưa ghi ra đĩa.
-3. Cột A: chuột phải → Đánh dấu 1 trang (đúng đặc tả, tách biệt với việc click trái
-   chỉ để xem trước — trước đây UI demo nhầm dùng chung 1 biến).
-4. Cột B: chuột phải vào 1 thumbnail (hoặc vùng đầu trang) → chọn vị trí chèn → menu
-   "Chèn" gọi `session.mark_page_a` + `session.select_insert_position_b` +
-   `session.perform_insert()` — Cột B tự render lại từ bản làm việc mới nhất.
-5. Nút "Lưu File": chặn nếu còn trang A đang đánh dấu mà chưa Chèn (đúng thông báo
-   lỗi đã chốt ở 02_dac_ta_tinh_nang.md mục 4), hỏi Ghi đè/Đổi tên khác/Hủy khi trùng
-   tên (mục 6), tên gợi ý mặc định `<tenfileB>_Insert.pdf`.
-6. Đã bỏ tính năng "Undo" của bản demo cũ: không có trong đặc tả đã chốt (mục 4 chỉ
-   liệt kê 3 nút Chèn/Lưu file/Clear) và `InsertSession` không có cơ chế hoàn tác một
-   lượt chèn trên bản làm việc trong bộ nhớ — giữ lại sẽ là 1 nút không hoạt động thật.
-
-Việc render ảnh trang dùng `pdf_core.PageRenderer` (từ path, cho File A và cho File B
-TRƯỚC khi có session) và `pdf_core.render_document_page` (từ đối tượng fitz.Document
-đang mở trong bộ nhớ, dùng riêng cho Cột B SAU khi session đã tạo — xem mục 8 mới
-thêm vào pdf_core.py, không đụng gì đến PageRenderer đang dùng cho Tách file/Edit).
+/src/ui/tools/insert_widget.py
 """
 
 from __future__ import annotations
@@ -479,20 +456,11 @@ class InsertFeatureWidget(QWidget):
         self._page_count_a: int = 0
         self._session: Optional[InsertSession] = None
 
-        # Renderer cho Cột A (luôn đọc từ path_a, không đổi trong suốt phiên làm việc)
-        # và Renderer tạm cho Cột B TRƯỚC khi có session (đọc từ path_b trên đĩa).
-        # Sau khi có session, Cột B render qua render_document_page(working_document)
-        # (xem pdf_core.py mục 8) — không dùng renderer có cache vì nội dung B đổi
-        # liên tục sau mỗi lượt chèn.
         self._renderer_a = PageRenderer()
         self._renderer_b_static = PageRenderer()
 
-        # Undo riêng cho Chèn file — xem src/undo_logic.py (không dùng chung với
-        # undo_manager.py của Edit, xem lý do ở phần đề xuất đã được đại ca xác nhận).
         self._undo_manager = InsertUndoManager()
 
-        # Trang A đang được click chọn (Cột A không còn thao tác "Đánh dấu" riêng —
-        # click trái vừa mở preview vừa là nguồn để chèn, theo yêu cầu đại ca).
         self._selected_page_a: int = 0
         self._selected_page_b: int = 0
 
@@ -521,7 +489,6 @@ class InsertFeatureWidget(QWidget):
         col_b_widget, _ = self._build_column_b()
         root_layout.addWidget(col_b_widget, 50)
 
-        # Khởi tạo duy nhất 1 Vạch Chỉ Thị Đỏ (Dùng dạng Overlay Widget)
         self._red_indicator = QFrame(self.thumb_container_b)
         self._red_indicator.setFixedHeight(_INDICATOR_HEIGHT)
         self._red_indicator.setStyleSheet(
@@ -869,8 +836,7 @@ class InsertFeatureWidget(QWidget):
         if self._session is not None:
             self._session.close()
             self._session = None
-        # Lịch sử Undo chỉ có ý nghĩa với đúng working_document đang hoạt động —
-        # đổi File A/B (tạo session mới) coi như khởi động lại, xoá sạch lịch sử cũ.
+
         self._undo_manager.clear()
 
         if not (self._path_a and self._path_b):
@@ -922,9 +888,6 @@ class InsertFeatureWidget(QWidget):
             self.thumb_layout_a.addWidget(wrapper)
             self._thumbs_a.append(thumb)
 
-        # Dồn khoảng trống dư (khi ít trang, chưa lấp đầy khung nhìn) xuống cuối cùng
-        # thay vì để Qt tự giãn đều spacing giữa các thumbnail — đây là nguyên nhân
-        # gây hiện tượng "kéo giãn" khoảng cách khi số trang ít.
         self.thumb_layout_a.addStretch(1)
 
         while self.preview_layout_a.count():
@@ -1038,9 +1001,7 @@ class InsertFeatureWidget(QWidget):
             self._red_indicator.hide()
 
     def _open_context_menu(self, insert_index: int, global_pos: QPoint, target_widget: QWidget) -> None:
-        """Menu chuột phải ở Cột B — chọn vị trí chèn rồi bấm "Chèn".
-        insert_index = 0 nghĩa là chèn vào đầu file (Top Zone); insert_index = N (>0)
-        nghĩa là chèn ngay sau trang thứ N (1-based)."""
+        """Menu chuột phải ở Cột B"""
         if self._session is None:
             self._show_error("Vui lòng chọn đủ File A và File B trước khi thao tác!")
             return
@@ -1097,10 +1058,6 @@ class InsertFeatureWidget(QWidget):
             log_error(f"Lỗi khi chèn trang {source_page} của File A vào vị trí {insert_index}: {exc}", exc)
             return
 
-        # Trang vừa chèn nằm ở đúng index = insert_index trong working_document
-        # (vì start_at = selected_position_b + 1 = insert_index, xem pdf_core.py
-        # InsertSession.perform_insert) — dùng đúng giá trị này để Undo sau này biết
-        # xoá đúng trang.
         self._undo_manager.register(start_index=insert_index, page_count=1)
 
         log_info(f"Đã chèn trang {source_page} của File A vào File B tại vị trí {insert_index}")
@@ -1258,9 +1215,7 @@ class InsertFeatureWidget(QWidget):
         self._hide_result()
 
     def _confirm_overwrite(self, path: str) -> str:
-        """Hỏi Ghi đè / Đổi tên khác / Hủy khi trùng tên file lưu kết quả
-        (02_dac_ta_tinh_nang.md mục 6). Style tường minh theo 01_dac_ta_giao_dien.md
-        mục 3 — không dùng QMessageBox mặc định."""
+        """Hỏi Ghi đè / Đổi tên khác / Hủy khi trùng tên file lưu kết quả"""
         box = QMessageBox(self)
         box.setWindowTitle("File đã tồn tại")
         box.setIcon(QMessageBox.Warning)
@@ -1301,9 +1256,6 @@ class InsertFeatureWidget(QWidget):
                 os.path.join(start_dir, default_name),
                 "PDF Files (*.pdf)",
                 options=QFileDialog.Option.DontConfirmOverwrite,
-                # Tắt hộp thoại "Confirm Save As" mặc định của hệ điều hành — app đã
-                # tự hỏi Ghi đè/Đổi tên khác/Hủy bằng QMessageBox style riêng ngay bên
-                # dưới, giữ cả 2 sẽ hiện 2 lần hỏi liên tiếp cho cùng 1 việc.
             )
             if not save_path:
                 return

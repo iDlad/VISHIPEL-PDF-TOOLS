@@ -1211,7 +1211,8 @@ class EditFeatureWidget(QWidget):
         if not session.page_order:
             self._show_error("File PDF không có trang nào.")
             return
-
+        if self._selected_file_path:
+            self._renderer.clear_cache(self._selected_file_path)
         self._selected_file_path = path
         self._renderer.clear_cache(path)
         self._session = session
@@ -1476,6 +1477,8 @@ class EditFeatureWidget(QWidget):
         self._show_success("Đã Redo thao tác vừa Undo.")
 
     def _on_clear_clicked(self) -> None:
+        if self._selected_file_path:
+            self._renderer.clear_cache(self._selected_file_path)
         self._selected_file_path = None
         self._session = None
         self._undo = UndoManager()
@@ -1564,6 +1567,8 @@ class EditFeatureWidget(QWidget):
             self._show_error(f"Không thể đọc lại file gốc để lưu: {exc}")
             return
 
+        if self._selected_file_path:
+            self._renderer.clear_cache(self._selected_file_path)
         self._undo.clear()
         self._update_undo_redo_buttons()
         self._show_success(f"Đã lưu file thành công: {output_path}")

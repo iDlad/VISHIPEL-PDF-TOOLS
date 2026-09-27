@@ -997,6 +997,9 @@ class _PreviewPage(QWidget):
         self._build_preview_thumbs([])
         self._build_preview_pages([])
 
+    def clear_cache(self, path: Optional[str] = None) -> None:
+        self._renderer.clear_cache(path)
+
     def show_file(self, path: str) -> None:
         self._cancel_active_render()
         name = os.path.basename(path)
@@ -2318,7 +2321,37 @@ class _RenamePreviewDialog(QDialog):
 
     def _on_confirm_clicked(self) -> None:
         if not self._output_dir:
-            QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng chọn thư mục lưu kết quả trước.")
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle("Thiếu thông tin")
+            box.setText("Vui lòng chọn thư mục lưu kết quả trước.")
+            box.setStandardButtons(QMessageBox.Ok)
+            box.setStyleSheet(
+                f"""
+                QMessageBox {{ background-color: white; }}
+                QMessageBox QLabel {{
+                    color: {COLOR_TEXT_PRIMARY};
+                    font-size: 13px;
+                }}
+                QPushButton {{
+                    background-color: {COLOR_ACCENT};
+                    color: white;
+                    border: none;
+                    border-radius: {CORNER_RADIUS}px;
+                    padding: 6px 14px;
+                    font-size: 13px;
+                    font-weight: 700;
+                    min-width: 90px;
+                }}
+                QPushButton:hover {{
+                    background-color: #9CA3AF;
+                }}
+                QPushButton:pressed {{
+                    background-color: #6B7280;
+                }}
+                """
+            )
+            box.exec()
             return
 
         new_names = self._current_new_names()
@@ -2786,9 +2819,12 @@ class RenameFeatureWidget(QWidget):
         item = self._find_item_for_row(row)
         if item is None:
             return
+        
         was_selected = row is self._selected_row
         self.file_list.takeItem(self.file_list.row(item))
+        self.preview_page.clear_cache(row.path)
         row.deleteLater()
+
         self._update_header_count()
         self._renumber_rows()
         if was_selected:
@@ -2903,6 +2939,7 @@ class RenameFeatureWidget(QWidget):
         self._update_rename_button_state()
 
     def _on_clear_clicked(self) -> None:
+        self.preview_page.clear_cache()
         self.file_list.clear()
         self._selected_row = None
         self._selected_profile_id = None
@@ -2955,9 +2992,7 @@ class RenameFeatureWidget(QWidget):
         base_values = self.form_page.current_values()
         dialog = _RenamePreviewDialog(files, profile, base_values, parent=self)
         if dialog.exec() == QDialog.Accepted:
-            self._show_success(
-                "Đã xem trước xong — chức năng ghi file đổi tên thật sẽ được nối logic ở phiên làm việc sau."
-            )
+            self._hide_result()
 
     # ------------------------------------------------------------------
     def _show_success(self, message: str) -> None:

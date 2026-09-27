@@ -1253,6 +1253,8 @@ class ProtectFeatureWidget(QWidget):
                 'File này không được bảo vệ — không cần mở khóa. Vui lòng dùng tab "Đặt mật khẩu".'
             )
             return
+        if self._current_path:
+            self._page_renderer.clear_cache(self._current_path)
 
         self._current_path = path
         self._current_file = path.replace("\\", "/").split("/")[-1]
@@ -1312,6 +1314,9 @@ class ProtectFeatureWidget(QWidget):
         self.confirm_password_input.clear()
         self.strength_meter.set_score(0)
         self._zoom_level = _ZOOM_DEFAULT
+        if self._current_path:
+            self._page_renderer.clear_cache(self._current_path)
+
         self._reset_file_selection()
         self._update_zoom_percent_label()
         self._hide_result()

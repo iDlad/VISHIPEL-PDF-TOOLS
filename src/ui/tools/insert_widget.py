@@ -1173,6 +1173,8 @@ class InsertFeatureWidget(QWidget):
             self._show_error(f"Không thể đọc file, có thể bị hỏng: {os.path.basename(path)}")
             return
 
+        if self._path_a:
+            self._renderer_a.clear_cache(self._path_a)
         self._path_a = path
         self._load_file_a(os.path.basename(path), count)
         self._rebuild_session()
@@ -1190,6 +1192,8 @@ class InsertFeatureWidget(QWidget):
             self._show_error(f"Không thể đọc file, có thể bị hỏng: {os.path.basename(path)}")
             return
 
+        if self._path_b:
+            self._renderer_b_static.clear_cache(self._path_b)
         self._path_b = path
         self._selected_page_b = 0
         self._target_insert_index_b = 0
@@ -1202,6 +1206,12 @@ class InsertFeatureWidget(QWidget):
         if self._session is not None:
             self._session.close()
             self._session = None
+
+        if self._path_a:
+            self._renderer_a.clear_cache(self._path_a)
+        if self._path_b:
+            self._renderer_b_static.clear_cache(self._path_b)
+
         self._path_a = None
         self._path_b = None
         self._renderer_a.clear_cache()
@@ -1282,6 +1292,11 @@ class InsertFeatureWidget(QWidget):
             self._show_error(str(exc))
             return
 
+        if self._path_a:
+            self._renderer_a.clear_cache(self._path_a)
+        if self._path_b:
+            self._renderer_b_static.clear_cache(self._path_b)
+            
         log_info(f"Đã lưu file Chèn: {save_path}")
         self._show_success(f"Đã lưu file thành công: {os.path.basename(save_path)}")
 

@@ -989,6 +989,8 @@ class SplitFeatureWidget(QWidget):
             log_error("Lỗi không xác định khi mở file trong tính năng Tách file", exc)
             self._show_error("Đã xảy ra lỗi không xác định khi mở file.")
             return
+        if self._selected_file_path:
+            self._renderer.clear_cache(self._selected_file_path)
 
         self._selected_file_path = path
         self._page_infos = page_infos
@@ -1022,8 +1024,12 @@ class SplitFeatureWidget(QWidget):
                 thumb.set_flagged(not thumb.is_flagged)
 
     def _on_clear_clicked(self) -> None:
+        
         self._cancel_render_worker()
+        if self._selected_file_path:
+            self._renderer.clear_cache(self._selected_file_path)
         self._selected_file_path = None
+        
         self._page_infos = []
         self.custom_checkbox.setChecked(False)
         self.pages_per_file_spin.setValue(1)

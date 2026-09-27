@@ -1262,6 +1262,9 @@ class WatermarkFeatureWidget(QWidget):
             self._show_error(f"Không thể mở file: {os.path.basename(path)}")
             return
 
+        if self._current_file_path:
+            self._renderer.clear_cache(self._current_file_path)
+
         self._current_file_path = path
         self._current_page_infos = page_infos
         self._renderer.clear_cache(path)  
@@ -1271,6 +1274,9 @@ class WatermarkFeatureWidget(QWidget):
         self._hide_result()
 
     def _on_clear_clicked(self) -> None:
+        if self._current_file_path:
+            self._renderer.clear_cache(self._current_file_path)
+            
         self._current_file_path = None
         self._current_page_infos = []
         self.text_input.setText("CONFIDENTIAL")

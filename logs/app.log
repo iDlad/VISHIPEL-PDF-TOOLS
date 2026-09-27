@@ -9,3 +9,11 @@
 2026-09-26 10:59:11 [INFO] Đã chèn trang 1 của File A vào File B tại vị trí 1
 2026-09-26 10:59:15 [INFO] Đã lưu file Chèn: D:/Temp/PDF_Merger_edited_Insert.pdf
 2026-09-26 21:04:29 [INFO] Tách file thành công: 'D:/Temp/PDF_Merger.pdf' -> 8 file tại 'D:/Temp'
+2026-09-27 08:34:57 [INFO] Tách file thành công: 'D:/Temp/PDF_Merger.pdf' -> 11 file tại 'D:/Temp'
+2026-09-27 10:24:09 [INFO] Đã chọn File A (Insert): D:/Temp/PDF_Split_01.pdf
+2026-09-27 10:24:11 [INFO] Đã chọn File B (Insert): D:/Temp/PDF_Split_03.pdf
+2026-09-27 10:24:30 [INFO] Đã chèn trang 1 của File A vào File B tại vị trí 2
+2026-09-27 10:24:32 [INFO] Đã hoàn tác (Undo) 1 lượt chèn trang ở tính năng Chèn file
+2026-09-27 10:24:34 [INFO] Đã chèn trang 1 của File A vào File B tại vị trí 0
+2026-09-27 10:24:37 [INFO] Đã lưu file Chèn: D:/Temp/PDF_Split_03_Insert.pdf
+2026-09-27 10:38:02 [INFO] Đã chèn Watermark (Text) vào 'D:/Temp/PDF_Split_01.pdf' -> 'D:/Temp/PDF_Split_01_Watermark.pdf'

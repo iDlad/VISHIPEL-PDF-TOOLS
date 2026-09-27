@@ -1414,6 +1414,8 @@ class MergeFeatureWidget(QWidget):
         self._cancel_active_render()
 
         name = os.path.basename(path)
+        if self._current_file_path:
+            self._renderer.clear_cache(self._current_file_path)
         self._current_file_name = name
         self._current_file_path = path
         self.preview_title.setText(f"Xem trước: {name}")
@@ -1439,6 +1441,8 @@ class MergeFeatureWidget(QWidget):
     def _show_empty_preview(self) -> None:
         self._cancel_active_render()
         self._current_file_name = None
+        if self._current_file_path:
+            self._renderer.clear_cache(self._current_file_path)
         self._current_file_path = None
         self._current_total_pages = 0
         self._current_page = 0

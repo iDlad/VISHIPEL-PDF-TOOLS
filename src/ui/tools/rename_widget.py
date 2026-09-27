@@ -7,6 +7,7 @@ import calendar
 import copy
 import datetime
 import os
+import sys
 import uuid
 from typing import Dict, List, Optional, Tuple
 
@@ -138,7 +139,21 @@ _SCROLLBAR_QSS = f"""
     }}
 """
 
-RENAME_PROFILES_FILE = "rename_profiles.json"
+def _get_app_base_dir() -> str:
+    """Thư mục gốc thật của app — dùng để đặt rename_profiles.json cạnh đó,
+    KHÔNG dựa vào thư mục làm việc hiện tại (cwd) lúc chạy app:
+    - Khi đã đóng gói bằng PyInstaller (sys.frozen=True): thư mục chứa file
+      .exe thật (sys.executable), không phải thư mục giải nén tạm _MEIPASS.
+    - Khi chạy bằng `python main.py` (dev): thư mục gốc dự án, suy ra từ vị
+      trí file này (src/ui/tools/rename_widget.py -> lùi 3 cấp).
+    Cùng nguyên tắc đã áp dụng ở src/logger.py — tránh mất/đọc nhầm hồ sơ mẫu
+    đã lưu nếu app được khởi chạy từ 1 thư mục làm việc khác."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+RENAME_PROFILES_FILE = os.path.join(_get_app_base_dir(), "rename_profiles.json")
 
 
 def _format_file_size(num_bytes: int) -> str:

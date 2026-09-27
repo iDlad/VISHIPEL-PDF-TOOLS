@@ -1,4 +1,3 @@
-
 """ /src/logger.py """
 
 from __future__ import annotations
@@ -6,8 +5,25 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import os
+import sys
 
-_LOG_DIR = os.path.join(os.getcwd(), "logs")
+
+def _get_app_base_dir() -> str:
+    """Trả về thư mục gốc THẬT của ứng dụng để đặt logs/ cạnh đó:
+    - Khi đã đóng gói bằng PyInstaller (sys.frozen=True): thư mục chứa file
+      .exe thật (sys.executable) — KHÔNG phải thư mục giải nén tạm _MEIPASS.
+    - Khi chạy bằng `python main.py` (dev): thư mục gốc dự án, suy ra từ vị
+      trí file logger.py này (src/logger.py -> lùi 1 cấp).
+    Không dùng os.getcwd() vì cwd phụ thuộc cách người dùng khởi chạy app
+    (double-click, shortcut, cmd từ thư mục khác, Task Scheduler...), có thể
+    khác thư mục thật chứa app trong vài trường hợp hiếm."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+_APP_BASE_DIR = _get_app_base_dir()
+_LOG_DIR = os.path.join(_APP_BASE_DIR, "logs")
 _LOG_FILE = os.path.join(_LOG_DIR, "app.log")
 
 

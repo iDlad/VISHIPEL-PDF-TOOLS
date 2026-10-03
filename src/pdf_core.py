@@ -776,3 +776,40 @@ def get_document_page_count(doc: fitz.Document) -> int:
 def get_document_page_size(doc: fitz.Document, page_index: int) -> Tuple[float, float]:
     rect = doc[page_index].rect
     return (rect.width, rect.height)
+
+
+# =============================================================================
+# 9. Hàm riêng cho tính năng Trích xuất trang (Extract) — BỔ SUNG MỚI
+# =============================================================================
+# Thuần mới, không sửa hàm/class nào đang phục vụ Tách file/Gộp file/Edit/Chèn file/
+# Bảo vệ/Watermark/Đổi tên. Chỉ GỌI LẠI PDFDocument và _safe_save có sẵn.
+
+def extract_pages(path: str, page_indexes_in_order: List[int], output_path: str) -> str:
+    """Trích các trang `page_indexes_in_order` (index gốc, 0-based) ra 1 file PDF mới.
+
+    Thứ tự trong danh sách chính là thứ tự trang của file kết quả (không phụ thuộc vị trí
+    trang trong file gốc). Các trang được giữ NGUYÊN TRẠNG: không xoay, không lật.
+    File gốc không bao giờ bị ghi đè — raise ValueError nếu output_path trùng path.
+    """
+    if not page_indexes_in_order:
+        raise ValueError("Cần ít nhất 1 trang để trích xuất")
+    if len(set(page_indexes_in_order)) != len(page_indexes_in_order):
+        raise ValueError("Danh sách trang trích xuất bị lặp trang")
+    if os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(output_path)):
+        raise ValueError("Không được ghi đè lên chính file gốc, vui lòng chọn tên file khác")
+
+    new_doc = fitz.open()
+    try:
+        with PDFDocument(path) as doc:
+            total = doc.page_count
+            for page_index in page_indexes_in_order:
+                if not (0 <= page_index < total):
+                    raise ValueError(
+                        f"Trang không hợp lệ: {page_index + 1} (file có {total} trang)"
+                    )
+            for page_index in page_indexes_in_order:
+                new_doc.insert_pdf(doc.raw, from_page=page_index, to_page=page_index)
+        _safe_save(new_doc, output_path)
+    finally:
+        new_doc.close()
+    return output_path

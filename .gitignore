@@ -9,3 +9,10 @@ __pycache__/
 
 # Cấu hình riêng của IDE
 .vscode/
+
+# Đóng gói Ver1 (PyInstaller + Inno Setup)
+/build/
+/dist/
+/installer_output/
+/vishipel_pdf_tools.spec
+/vishipel_pdf_tools_setup.iss

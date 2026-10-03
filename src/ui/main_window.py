@@ -26,6 +26,7 @@ from src.ui.tools.insert_widget import InsertFeatureWidget
 from src.ui.tools.watermark_widget import WatermarkFeatureWidget
 from src.ui.tools.protect_feature_widget import ProtectFeatureWidget
 from src.ui.tools.rename_widget import RenameFeatureWidget
+from src.ui.tools.extract_widget import ExtractFeatureWidget
 
 from src.logger import clear_log, log_error
 
@@ -79,6 +80,8 @@ class MainWindow(QMainWindow):
                 page = ProtectFeatureWidget()
             elif key == "rename":
                 page = RenameFeatureWidget()    
+            elif key == "extract":
+                page = ExtractFeatureWidget()
             else:
                 page = PlaceholderFeatureWidget(label)
             index = self.content_stack.addWidget(page)

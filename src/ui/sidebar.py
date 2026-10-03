@@ -31,6 +31,7 @@ MENU_FEATURES: List[Tuple[str, str, str]] = [
     ("merge", "Gộp File", "mdi6.file-multiple-outline"),
     ("edit", "Edit File", "mdi6.file-document-edit-outline"),
     ("insert", "Chèn File", "mdi6.file-plus-outline"),
+    ("extract", "Trích xuất", "mdi6.file-export-outline"),
 ]
 
 # Nhóm 2 — "Quản lý"

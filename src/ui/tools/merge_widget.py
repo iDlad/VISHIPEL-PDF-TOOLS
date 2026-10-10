@@ -7,9 +7,10 @@ import os
 from typing import Dict, List, Optional, Tuple
 
 import qtawesome as qta
-from PySide6.QtCore import Qt, Signal, QSize, QPoint, QThread, QUrl
+from PySide6.QtCore import Qt, Signal, QSize, QPoint, QThread, QUrl, QEventLoop
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPixmap, QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -764,6 +765,8 @@ class MergeFeatureWidget(QWidget):
         self._renderer = PageRenderer()
         self._render_worker: Optional[_MergePreviewWorker] = None
         self._render_token = 0
+        # True khi result_label đang hiện thông báo "đang tải file" (xem _show_loading)
+        self._is_loading = False
 
         self._last_merge_attempt: Optional[Tuple[List[str], str]] = None
 
@@ -1129,7 +1132,8 @@ class MergeFeatureWidget(QWidget):
         self._update_header_count()
         if was_selected:
             self._select_first_available()
-        self._hide_result()
+        if not self._is_loading:
+            self._hide_result()
 
     def _move_row(self, from_index: int, to_index: int) -> None:
         count = self.file_list.count()
@@ -1204,8 +1208,12 @@ class MergeFeatureWidget(QWidget):
     # ------------------------------------------------------------------
     def _on_files_selected(self, paths: List[str]) -> None:
         skipped: List[str] = []
-        for path in paths:
+        total_files = len(paths)
+        for file_no, path in enumerate(paths, 1):
             name = os.path.basename(path)
+            # Báo tiến độ đọc từng file trước khi get_page_count chặn UI thread
+            self._show_loading(f"Đang đọc file… {file_no}/{total_files}")
+            QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
             try:
                 pages = get_page_count(path)
             except PasswordProtectedError:
@@ -1225,6 +1233,9 @@ class MergeFeatureWidget(QWidget):
 
             self._add_file_row(path, name, size_text, pages)
 
+        # Kết thúc giai đoạn đọc từng file — tắt thông báo "Đang đọc file… x/N"
+        self._hide_result()
+
         if self._selected_row is None:
             self._select_first_available()
 
@@ -1232,7 +1243,8 @@ class MergeFeatureWidget(QWidget):
             self._show_error(
                 f"Không thể thêm {len(skipped)} file: " + "; ".join(skipped)
             )
-        else:
+        elif not self._is_loading:
+            # Nếu đang tải xem trước file đầu tiên thì giữ nguyên thông báo "đang tải"
             self._hide_result()
 
     def _on_clear_clicked(self) -> None:
@@ -1411,6 +1423,11 @@ class MergeFeatureWidget(QWidget):
         self._select_row(first_row)
 
     def _load_preview(self, path: str) -> None:
+        # Báo ngay cho người dùng biết file đang được đọc — list_page_infos và dựng lưới bên dưới
+        # chạy đồng bộ trên UI thread nên phải vẽ lại thông báo trước khi bị chặn.
+        self._show_loading("Đang đọc file, vui lòng chờ…")
+        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
         self._cancel_active_render()
 
         name = os.path.basename(path)
@@ -1431,15 +1448,30 @@ class MergeFeatureWidget(QWidget):
 
         self._current_total_pages = len(infos)
         self._current_page = 1 if infos else 0
-        self._build_preview_thumbs(infos)
-        self._build_preview_pages(infos)
-        self._refresh_page_view()
 
-        if infos:
-            self._start_render_worker(path, infos)
+        # Tiến độ render ảnh (x/N) được cập nhật ở _on_page_ready và tắt ở _on_worker_finished.
+        # finally: nếu không có worker nào được khởi động (file 0 trang, lỗi bất ngờ) thì tắt
+        # thông báo "đang tải" — lỗi đã hiện bằng _show_error thì không bị đụng tới.
+        try:
+            if infos:
+                self._show_loading(f"Đang dựng giao diện {len(infos)} trang…")
+                QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
+            self._build_preview_thumbs(infos)
+            self._build_preview_pages(infos)
+            self._refresh_page_view()
+
+            if infos:
+                self._show_loading(f"Đang tải trang xem trước… 0/{len(infos)}")
+                self._start_render_worker(path, infos)
+        finally:
+            if self._is_loading and self._render_worker is None:
+                self._hide_result()
 
     def _show_empty_preview(self) -> None:
         self._cancel_active_render()
+        if self._is_loading:
+            self._hide_result()
         self._current_file_name = None
         if self._current_file_path:
             self._renderer.clear_cache(self._current_file_path)
@@ -1539,6 +1571,9 @@ class MergeFeatureWidget(QWidget):
     def _on_worker_finished(self, worker: _MergePreviewWorker) -> None:
         if self._render_worker is worker:
             self._render_worker = None
+            # Worker hiện hành chạy xong (kể cả khi bỏ sót vài trang lỗi) — tắt thông báo đang tải
+            if self._is_loading:
+                self._hide_result()
         worker.deleteLater()
 
     def _on_thumb_ready(self, token: int, page_index: int, data: bytes) -> None:
@@ -1552,6 +1587,14 @@ class MergeFeatureWidget(QWidget):
     def _on_page_ready(self, token: int, page_index: int, data: bytes) -> None:
         if token != self._render_token:
             return
+        # Cập nhật tiến độ tải (worker render tuần tự nên page_index + 1 = số trang đã xong)
+        if self._is_loading:
+            done = page_index + 1
+            total = self._current_total_pages
+            if done >= total:
+                self._hide_result()
+            else:
+                self._show_loading(f"Đang tải trang xem trước… {done}/{total}")
         pixmap = QPixmap()
         pixmap.loadFromData(data, "PNG")
         frame = self._preview_pages.get(page_index + 1)
@@ -1644,18 +1687,28 @@ class MergeFeatureWidget(QWidget):
             self._apply_preview_zoom()
 
     # ------------------------------------------------------------------
+    def _show_loading(self, message: str) -> None:
+        # Thông báo trạng thái đang tải (màu chữ phụ, không dùng popup)
+        self._is_loading = True
+        self.result_label.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY}; font-size: 12px; font-weight: 500;")
+        self.result_label.setText(f"⏳ {message}")
+        self.result_label.show()
+
     def _show_success(self, message: str) -> None:
+        self._is_loading = False
         self.result_label.setStyleSheet(f"color: {COLOR_SUCCESS}; font-size: 12px; font-weight: 500;")
         self.result_label.setText(f"✓ {message}")
         self.result_label.show()
         self.retry_button.hide()
 
     def _show_error(self, message: str, retryable: bool = False) -> None:
+        self._is_loading = False
         self.result_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 12px; font-weight: 500;")
         self.result_label.setText(f"✕ {message}")
         self.result_label.show()
         self.retry_button.setVisible(retryable)
 
     def _hide_result(self) -> None:
+        self._is_loading = False
         self.result_label.hide()
         self.retry_button.hide()

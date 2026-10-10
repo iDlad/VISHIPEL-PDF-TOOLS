@@ -7,9 +7,10 @@ import os
 from typing import Dict, List, Optional
 
 import qtawesome as qta
-from PySide6.QtCore import Qt, Signal, QSize, QUrl
+from PySide6.QtCore import Qt, Signal, QSize, QUrl, QEventLoop
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPixmap, QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -691,6 +692,8 @@ class EditFeatureWidget(QWidget):
         self._session: Optional[pdf_core.PageEditSession] = None
         self._renderer = pdf_core.PageRenderer()
         self._undo = UndoManager()
+        # True khi result_label đang hiện thông báo "đang tải file" (xem _show_loading)
+        self._is_loading = False
 
         self._thumbnails: List[_EditPageThumbnail] = []
         self._preview_frames: List[QFrame] = []
@@ -749,6 +752,28 @@ class EditFeatureWidget(QWidget):
             "background: transparent; border: none;"
         )
         a3_header_layout.addWidget(self.a3_title_label, stretch=1)
+
+        # Nút "Xoay tất cả": menu xoay toàn bộ tài liệu, căn phải cùng hàng tiêu đề
+        self.rotate_all_button = QPushButton(" Xoay tất cả")
+        self.rotate_all_button.setIcon(qta.icon("mdi6.rotate-right", color=COLOR_TEXT_PRIMARY))
+        self.rotate_all_button.setCursor(Qt.PointingHandCursor)
+        self.rotate_all_button.setFixedHeight(30)
+        self.rotate_all_button.setMinimumWidth(120)
+        self.rotate_all_button.setStyleSheet(_action_button_style())
+        self.rotate_all_button.setToolTip("Xoay toàn bộ các trang của tài liệu")
+        rotate_all_menu = QMenu(self.rotate_all_button)
+        rotate_all_menu.setStyleSheet(_CONTEXT_MENU_QSS)
+        act_left = rotate_all_menu.addAction(
+            qta.icon("mdi6.rotate-left", color=COLOR_TEXT_PRIMARY), "Xoay trái 90°")
+        act_right = rotate_all_menu.addAction(
+            qta.icon("mdi6.rotate-right", color=COLOR_TEXT_PRIMARY), "Xoay phải 90°")
+        act_180 = rotate_all_menu.addAction(
+            qta.icon("mdi6.rotate-360", color=COLOR_TEXT_PRIMARY), "Xoay 180°")
+        act_left.triggered.connect(lambda: self._on_rotate_all_requested(-90))
+        act_right.triggered.connect(lambda: self._on_rotate_all_requested(90))
+        act_180.triggered.connect(lambda: self._on_rotate_all_requested(180))
+        self.rotate_all_button.setMenu(rotate_all_menu)
+        a3_header_layout.addWidget(self.rotate_all_button)
         a3_box_layout.addWidget(a3_header)
 
         head_marker_wrap = QWidget()
@@ -1071,7 +1096,7 @@ class EditFeatureWidget(QWidget):
             self._frame_by_id[source_index] = frame
         self._refresh_all_frame_images()
         for idx, frame in enumerate(self._preview_frames):
-            frame._position_label.setText(f"Vị trí #{idx + 1}")
+            frame._position_label.setText(f"{idx + 1}")
 
     def _clear_grid_widgets(self) -> None:
         for thumb in self._thumb_by_id.values():
@@ -1101,8 +1126,10 @@ class EditFeatureWidget(QWidget):
         thumb.set_rotation_badge(rotation)
 
     def _refresh_all_thumb_images(self) -> None:
-        for thumb in self._thumb_by_id.values():
+        total = len(self._thumb_by_id)
+        for done, thumb in enumerate(self._thumb_by_id.values(), 1):
             self._refresh_thumb_image(thumb)
+            self._tick_loading("Đang tạo ảnh thu nhỏ", done, total)
 
     def _refresh_frame_image(self, frame: QFrame) -> None:
         if self._session is None or not self._selected_file_path:
@@ -1117,8 +1144,10 @@ class EditFeatureWidget(QWidget):
         frame.image_label.setPixmap(pixmap)
 
     def _refresh_all_frame_images(self) -> None:
-        for frame in self._frame_by_id.values():
+        total = len(self._frame_by_id)
+        for done, frame in enumerate(self._frame_by_id.values(), 1):
             self._refresh_frame_image(frame)
+            self._tick_loading("Đang tạo ảnh xem trước", done, total)
 
     # ------------------------------------------------------------------
     def _fit_base_width(self) -> int:
@@ -1169,6 +1198,9 @@ class EditFeatureWidget(QWidget):
         self.zoom_percent_label.setText(f"{round(self._zoom_level * 100)}%")
 
     def _on_preview_viewport_resized(self) -> None:
+        # Đang dựng file mới: bỏ qua, _on_file_selected sẽ áp lại độ rộng khi dựng xong
+        if self._is_loading:
+            return
         if self._preview_frames:
             self._apply_preview_zoom()
 
@@ -1176,6 +1208,7 @@ class EditFeatureWidget(QWidget):
     def _update_undo_redo_buttons(self) -> None:
         has_session = self._session is not None
         no_move_running = self._move_source_thumb is None
+        self.rotate_all_button.setEnabled(has_session and no_move_running)
         self.undo_button.setEnabled(has_session and no_move_running and self._undo.can_undo())
         self.redo_button.setEnabled(has_session and no_move_running and self._undo.can_redo())
 
@@ -1199,6 +1232,11 @@ class EditFeatureWidget(QWidget):
 
     # ------------------------------------------------------------------
     def _on_file_selected(self, path: str) -> None:
+        # Báo ngay cho người dùng biết file đang được đọc — các bước bên dưới chạy đồng bộ
+        # trên UI thread nên phải vẽ lại thông báo trước khi bị chặn.
+        self._show_loading("Đang đọc file, vui lòng chờ…")
+        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
         try:
             session = pdf_core.PageEditSession(path)
         except pdf_core.PasswordProtectedError:
@@ -1223,16 +1261,26 @@ class EditFeatureWidget(QWidget):
         self._force_reset_move_state()
         self._clear_grid_widgets()
 
-        self._build_grid_from_session()
-        preview_layout = self.preview_scroll_b.widget().layout()
-        self._build_preview_from_session(preview_layout)
+        # Dựng lưới + render ảnh chạy đồng bộ: báo tiến độ qua _tick_loading trong các vòng render.
+        # finally đảm bảo luôn tắt trạng thái "đang tải" kể cả khi có lỗi bất ngờ.
+        try:
+            self._show_loading(f"Đang dựng giao diện {len(session.page_order)} trang…")
+            QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
+            self._build_grid_from_session()
+            preview_layout = self.preview_scroll_b.widget().layout()
+            self._build_preview_from_session(preview_layout)
+        finally:
+            self._hide_result()
+
+        # Trong lúc dựng, sự kiện đổi kích thước viewport bị bỏ qua — áp lại độ rộng nếu bị lệch
+        self._apply_preview_zoom()
 
         self.a3_title_label.setText(f'File được chọn: "{os.path.basename(path)}"')
         self.preview_title_label.setText(f'Xem trước: "{os.path.basename(path)}"')
 
         self._update_undo_redo_buttons()
         self._select_page(1)
-        self._hide_result()
         self.setFocus()
 
     def _on_delete_mode_toggled(self, checked: bool) -> None:
@@ -1273,6 +1321,37 @@ class EditFeatureWidget(QWidget):
         huong = "trái" if direction == "left" else "phải"
         self._show_success(f"Đã xoay {huong} 90° trang #{thumb.page_number}.")
 
+    def _on_rotate_all_requested(self, degrees: int) -> None:
+        """Xoay toàn bộ trang còn trong lưới (kể cả trang đang đánh dấu Xóa) — gộp thành
+        1 bước Undo duy nhất, cộng dồn vào góc xoay tạm của từng trang như xoay lẻ."""
+        if self._session is None or self._move_source_thumb is not None:
+            return
+        order = self._session.page_order
+        if not order:
+            return
+
+        before = self._session.snapshot()
+        # rotate() chỉ nhận trái/phải 90° nên 180° = 2 lần xoay phải
+        steps = {-90: ["left"], 90: ["right"], 180: ["right", "right"]}[degrees]
+        for page_id in order:
+            for direction in steps:
+                self._session.rotate(page_id, direction)
+        after = self._session.snapshot()
+        self._undo.register("rotate", before, after)
+        self._update_undo_redo_buttons()
+
+        # Render lại cả loạt đồng bộ: bật trạng thái loading để hiện tiến độ x/N
+        self._show_loading(f"Đang xoay {len(order)} trang…")
+        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+        try:
+            self._refresh_all_thumb_images()
+            self._refresh_all_frame_images()
+        finally:
+            self._is_loading = False
+
+        label = {-90: "trái 90°", 90: "phải 90°", 180: "180°"}[degrees]
+        self._show_success(f"Đã xoay {label} toàn bộ {len(order)} trang.")
+
     # ------------------------------------------------------------------
     def _on_move_requested(self, thumb: _EditPageThumbnail) -> None:
         if self._move_source_thumb is not None or thumb.is_flagged:
@@ -1285,6 +1364,7 @@ class EditFeatureWidget(QWidget):
         self.delete_checkbox.setEnabled(False)
         self.undo_button.setEnabled(False)
         self.redo_button.setEnabled(False)
+        self.rotate_all_button.setEnabled(False)
         for t in self._thumbnails:
             t.set_move_mode_active(True)
         self.head_marker.set_move_mode_active(True)
@@ -1575,15 +1655,33 @@ class EditFeatureWidget(QWidget):
         self._open_containing_folder(output_path)
 
     # ------------------------------------------------------------------
+    def _show_loading(self, message: str) -> None:
+        # Thông báo trạng thái đang tải (màu chữ phụ, không dùng popup)
+        self._is_loading = True
+        self.result_label.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY}; font-size: 12px; font-weight: 500;")
+        self.result_label.setText(f"⏳ {message}")
+        self.result_label.show()
+
+    def _tick_loading(self, stage: str, done: int, total: int) -> None:
+        # Cập nhật tiến độ x/N rồi cho Qt vẽ lại; không làm gì nếu không đang tải file mới
+        # (VD: xoay trang, Undo/Redo cũng gọi các hàm render nhưng không cần thông báo).
+        if not self._is_loading:
+            return
+        self._show_loading(f"{stage}… {done}/{total}")
+        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
     def _show_success(self, message: str) -> None:
+        self._is_loading = False
         self.result_label.setStyleSheet(f"color: {COLOR_SUCCESS}; font-size: 12px; font-weight: 500;")
         self.result_label.setText(f"✓ {message}")
         self.result_label.show()
 
     def _show_error(self, message: str) -> None:
+        self._is_loading = False
         self.result_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 12px; font-weight: 500;")
         self.result_label.setText(f"✗ {message}")
         self.result_label.show()
 
     def _hide_result(self) -> None:
+        self._is_loading = False
         self.result_label.hide()

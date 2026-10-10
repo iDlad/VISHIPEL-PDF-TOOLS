@@ -14,9 +14,10 @@ import os
 from typing import Dict, List, Optional
 
 import qtawesome as qta
-from PySide6.QtCore import Qt, Signal, QSize, QUrl
+from PySide6.QtCore import Qt, Signal, QSize, QUrl, QEventLoop
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPixmap, QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -547,6 +548,8 @@ class ExtractFeatureWidget(QWidget):
         self._selected_file_path: Optional[str] = None
         self._page_count: int = 0
         self._renderer = pdf_core.PageRenderer()
+        # True khi result_label đang hiện thông báo "đang tải file" (xem _show_loading)
+        self._is_loading = False
 
         # Danh sách index trang GỐC (0-based) theo đúng thứ tự đánh dấu.
         # Phần tử thứ k (0-based) chính là nhãn #(k+1) và là trang thứ k+1 của file kết quả.
@@ -865,8 +868,10 @@ class ExtractFeatureWidget(QWidget):
         thumb.set_image(data)
 
     def _refresh_all_thumb_images(self) -> None:
-        for thumb in self._thumb_by_id.values():
+        total = len(self._thumb_by_id)
+        for done, thumb in enumerate(self._thumb_by_id.values(), 1):
             self._refresh_thumb_image(thumb)
+            self._tick_loading("Đang tạo ảnh thu nhỏ", done, total)
 
     def _refresh_frame_image(self, frame: QFrame) -> None:
         if not self._selected_file_path:
@@ -880,8 +885,10 @@ class ExtractFeatureWidget(QWidget):
         frame.image_label.setPixmap(pixmap)
 
     def _refresh_all_frame_images(self) -> None:
-        for frame in self._frame_by_id.values():
+        total = len(self._frame_by_id)
+        for done, frame in enumerate(self._frame_by_id.values(), 1):
             self._refresh_frame_image(frame)
+            self._tick_loading("Đang tạo ảnh xem trước", done, total)
 
     # ------------------------------------------------------------------
     # Zoom Cột B
@@ -934,6 +941,9 @@ class ExtractFeatureWidget(QWidget):
         self.zoom_percent_label.setText(f"{round(self._zoom_level * 100)}%")
 
     def _on_preview_viewport_resized(self) -> None:
+        # Đang dựng file mới: bỏ qua, _on_file_selected sẽ áp lại độ rộng khi dựng xong
+        if self._is_loading:
+            return
         if self._preview_frames:
             self._apply_preview_zoom()
 
@@ -941,6 +951,11 @@ class ExtractFeatureWidget(QWidget):
     # Chọn file
     # ------------------------------------------------------------------
     def _on_file_selected(self, path: str) -> None:
+        # Báo ngay cho người dùng biết file đang được đọc — các bước bên dưới chạy đồng bộ
+        # trên UI thread nên phải vẽ lại thông báo trước khi bị chặn.
+        self._show_loading("Đang đọc file, vui lòng chờ…")
+        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
         try:
             page_count = pdf_core.get_page_count(path)
         except pdf_core.PasswordProtectedError:
@@ -963,9 +978,21 @@ class ExtractFeatureWidget(QWidget):
         self._marked_order = []
 
         self._clear_grid_widgets()
-        self._build_grid()
-        preview_layout = self.preview_scroll_b.widget().layout()
-        self._build_preview(preview_layout)
+
+        # Dựng lưới + render ảnh chạy đồng bộ: báo tiến độ qua _tick_loading trong các vòng render.
+        # finally đảm bảo luôn tắt trạng thái "đang tải" kể cả khi có lỗi bất ngờ.
+        try:
+            self._show_loading(f"Đang dựng giao diện {page_count} trang…")
+            QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
+            self._build_grid()
+            preview_layout = self.preview_scroll_b.widget().layout()
+            self._build_preview(preview_layout)
+        finally:
+            self._hide_result()
+
+        # Trong lúc dựng, sự kiện đổi kích thước viewport bị bỏ qua — áp lại độ rộng nếu bị lệch
+        self._apply_preview_zoom()
 
         self.a3_title_label.setText(f'File được chọn: "{os.path.basename(path)}"')
         self.preview_title_label.setText(f'Xem trước: "{os.path.basename(path)}"')
@@ -973,7 +1000,6 @@ class ExtractFeatureWidget(QWidget):
         self._refresh_marks_ui()
         self._update_zoom_buttons_state()
         self._select_page(0)
-        self._hide_result()
 
     # ------------------------------------------------------------------
     # Chọn trang xem trước / đánh dấu
@@ -1129,15 +1155,33 @@ class ExtractFeatureWidget(QWidget):
         self._open_containing_folder(output_path)
 
     # ------------------------------------------------------------------
+    def _show_loading(self, message: str) -> None:
+        # Thông báo trạng thái đang tải (màu chữ phụ, không dùng popup)
+        self._is_loading = True
+        self.result_label.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY}; font-size: 12px; font-weight: 500;")
+        self.result_label.setText(f"⏳ {message}")
+        self.result_label.show()
+
+    def _tick_loading(self, stage: str, done: int, total: int) -> None:
+        # Cập nhật tiến độ x/N rồi cho Qt vẽ lại; không làm gì nếu không đang tải file mới
+        # (VD: đổi zoom cũng gọi các hàm render nhưng không cần thông báo).
+        if not self._is_loading:
+            return
+        self._show_loading(f"{stage}… {done}/{total}")
+        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
     def _show_success(self, message: str) -> None:
+        self._is_loading = False
         self.result_label.setStyleSheet(f"color: {COLOR_SUCCESS}; font-size: 12px; font-weight: 500;")
         self.result_label.setText(f"✓ {message}")
         self.result_label.show()
 
     def _show_error(self, message: str) -> None:
+        self._is_loading = False
         self.result_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 12px; font-weight: 500;")
         self.result_label.setText(f"✗ {message}")
         self.result_label.show()
 
     def _hide_result(self) -> None:
+        self._is_loading = False
         self.result_label.hide()

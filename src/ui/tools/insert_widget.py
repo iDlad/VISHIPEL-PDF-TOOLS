@@ -8,9 +8,10 @@ import os
 from typing import Dict, List, Optional, Tuple
 
 import qtawesome as qta
-from PySide6.QtCore import Qt, Signal, QSize, QPoint, QUrl
+from PySide6.QtCore import Qt, Signal, QSize, QPoint, QUrl, QEventLoop
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QAction, QPixmap, QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -458,6 +459,8 @@ class InsertFeatureWidget(QWidget):
 
         self._renderer_a = PageRenderer()
         self._renderer_b_static = PageRenderer()
+        # True khi result_label đang hiện thông báo "đang tải file" (xem _show_loading)
+        self._is_loading = False
 
         self._undo_manager = InsertUndoManager()
 
@@ -887,6 +890,7 @@ class InsertFeatureWidget(QWidget):
 
             self.thumb_layout_a.addWidget(wrapper)
             self._thumbs_a.append(thumb)
+            self._tick_loading("Đang tạo ảnh thu nhỏ File A", page_num, count)
 
         self.thumb_layout_a.addStretch(1)
 
@@ -902,6 +906,7 @@ class InsertFeatureWidget(QWidget):
             frame.set_image(self._render_a_detail_bytes(idx))
             self.preview_layout_a.addWidget(frame, alignment=Qt.AlignHCenter)
             self._pages_widget_a[page_num] = frame
+            self._tick_loading("Đang tạo ảnh xem trước File A", page_num, count)
 
         self.preview_layout_a.addStretch(1)
 
@@ -959,6 +964,7 @@ class InsertFeatureWidget(QWidget):
 
             self.thumb_layout_b.addWidget(wrapper)
             self._thumbs_b.append(thumb)
+            self._tick_loading("Đang tạo ảnh thu nhỏ File B", page_num, count)
 
         self.thumb_layout_b.addStretch(1)
 
@@ -974,6 +980,7 @@ class InsertFeatureWidget(QWidget):
             frame.set_image(self._render_b_detail_bytes(idx))
             self.preview_layout_b.addWidget(frame, alignment=Qt.AlignHCenter)
             self._pages_widget_b[page_num] = frame
+            self._tick_loading("Đang tạo ảnh xem trước File B", page_num, count)
 
         self.preview_layout_b.addStretch(1)
 
@@ -1164,6 +1171,11 @@ class InsertFeatureWidget(QWidget):
     # Actions — chọn file (validate thật qua pdf_core)
     # ------------------------------------------------------------------
     def _on_file_a_selected(self, path: str) -> None:
+        # Báo ngay cho người dùng biết file đang được đọc — các bước bên dưới chạy đồng bộ
+        # trên UI thread nên phải vẽ lại thông báo trước khi bị chặn.
+        self._show_loading("Đang đọc File A, vui lòng chờ…")
+        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
         try:
             count = get_page_count(path)
         except PasswordProtectedError:
@@ -1176,13 +1188,27 @@ class InsertFeatureWidget(QWidget):
         if self._path_a:
             self._renderer_a.clear_cache(self._path_a)
         self._path_a = path
-        self._load_file_a(os.path.basename(path), count)
-        self._rebuild_session()
-        self._refresh_column_b_display()
-        self._hide_result()
+
+        # Dựng lưới + render ảnh chạy đồng bộ: báo tiến độ qua _tick_loading trong các vòng render.
+        # finally đảm bảo luôn tắt trạng thái "đang tải" kể cả khi có lỗi bất ngờ.
+        try:
+            self._show_loading(f"Đang dựng giao diện File A ({count} trang)…")
+            QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+            self._load_file_a(os.path.basename(path), count)
+
+            self._show_loading("Đang chuẩn bị bản làm việc…")
+            QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+            self._rebuild_session()
+            self._refresh_column_b_display()
+        finally:
+            self._hide_result()
         log_info(f"Đã chọn File A (Insert): {path}")
 
     def _on_file_b_selected(self, path: str) -> None:
+        # Báo ngay cho người dùng biết file đang được đọc (xem chú thích ở _on_file_a_selected)
+        self._show_loading("Đang đọc File B, vui lòng chờ…")
+        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
         try:
             get_page_count(path)
         except PasswordProtectedError:
@@ -1197,9 +1223,14 @@ class InsertFeatureWidget(QWidget):
         self._path_b = path
         self._selected_page_b = 0
         self._target_insert_index_b = 0
-        self._rebuild_session()
-        self._refresh_column_b_display()
-        self._hide_result()
+
+        try:
+            self._show_loading("Đang chuẩn bị bản làm việc…")
+            QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+            self._rebuild_session()
+            self._refresh_column_b_display()
+        finally:
+            self._hide_result()
         log_info(f"Đã chọn File B (Insert): {path}")
 
     def _on_clear_clicked(self) -> None:
@@ -1310,15 +1341,33 @@ class InsertFeatureWidget(QWidget):
             self._apply_zoom_a()
             self._apply_zoom_b()
 
+    def _show_loading(self, message: str) -> None:
+        # Thông báo trạng thái đang tải (màu chữ phụ, không dùng popup)
+        self._is_loading = True
+        self.result_label.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY}; font-size: 12px; font-weight: 500;")
+        self.result_label.setText(f"⏳ {message}")
+        self.result_label.show()
+
+    def _tick_loading(self, stage: str, done: int, total: int) -> None:
+        # Cập nhật tiến độ x/N rồi cho Qt vẽ lại; không làm gì nếu không đang tải file mới
+        # (VD: Chèn/Undo/Clear cũng dựng lại Cột B nhưng không cần thông báo này).
+        if not self._is_loading:
+            return
+        self._show_loading(f"{stage}… {done}/{total}")
+        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
     def _show_success(self, message: str) -> None:
+        self._is_loading = False
         self.result_label.setStyleSheet(f"color: {COLOR_SUCCESS}; font-size: 12px; font-weight: 500;")
         self.result_label.setText(f"✓ {message}")
         self.result_label.show()
 
     def _show_error(self, message: str) -> None:
+        self._is_loading = False
         self.result_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 12px; font-weight: 500;")
         self.result_label.setText(f"✕ {message}")
         self.result_label.show()
 
     def _hide_result(self) -> None:
+        self._is_loading = False
         self.result_label.hide()

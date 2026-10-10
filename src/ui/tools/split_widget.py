@@ -7,9 +7,10 @@ import os
 from typing import Dict, List, Optional
 
 import qtawesome as qta
-from PySide6.QtCore import Qt, Signal, QSize, QThread, QUrl
+from PySide6.QtCore import Qt, Signal, QSize, QThread, QUrl, QEventLoop
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPixmap, QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -481,6 +482,9 @@ class SplitFeatureWidget(QWidget):
         self._preview_pages: Dict[int, QFrame] = {}
         self._renderer = PageRenderer()
         self._render_worker: Optional[_PageRenderWorker] = None
+        # True khi dòng trạng thái đang hiện thông báo "đang tải" — để cập nhật tiến độ
+        # không ghi đè nhầm thông báo thành công/lỗi xuất hiện sau đó.
+        self._is_loading = False
 
         self._preview_png_cache: Dict[int, bytes] = {}
         self._zoom_level: float = _ZOOM_DEFAULT
@@ -957,6 +961,15 @@ class SplitFeatureWidget(QWidget):
         worker.start()
 
     def _on_page_rendered(self, page_index: int, thumb_bytes: bytes, preview_bytes: bytes) -> None:
+        # Cập nhật tiến độ tải (worker render tuần tự nên page_index + 1 = số trang đã xong)
+        if self._is_loading:
+            done = page_index + 1
+            total = len(self._page_infos)
+            if done >= total:
+                self._hide_result()
+            else:
+                self._show_loading(f"Đang tải trang xem trước… {done}/{total}")
+
         if page_index < len(self._thumbnails):
             self._thumbnails[page_index].set_thumbnail_image(thumb_bytes)
 
@@ -977,6 +990,11 @@ class SplitFeatureWidget(QWidget):
         self._cancel_render_worker()
         self._hide_result()
 
+        # Báo ngay cho người dùng biết file đang được đọc — bước list_page_infos bên dưới
+        # chạy đồng bộ trên UI thread nên phải vẽ lại thông báo trước khi bị chặn.
+        self._show_loading("Đang đọc file, vui lòng chờ…")
+        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
         try:
             page_infos = list_page_infos(path)
         except PasswordProtectedError:
@@ -995,6 +1013,10 @@ class SplitFeatureWidget(QWidget):
         self._selected_file_path = path
         self._page_infos = page_infos
 
+        # Bước dựng lưới thumbnail + khung preview cũng chạy đồng bộ — báo trước khi dựng
+        self._show_loading(f"Đang dựng giao diện {len(page_infos)} trang…")
+        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
         self._clear_grid_and_preview()
         self._build_real_grid(page_infos)
         self._build_real_preview(page_infos)
@@ -1006,6 +1028,7 @@ class SplitFeatureWidget(QWidget):
         self.preview_title_label.setText(f'Xem trước: "{filename}"')
 
         self._select_page(1)
+        self._show_loading(f"Đang tải trang xem trước… 0/{len(page_infos)}")
         self._start_render_worker(path, len(page_infos))
 
     def _on_custom_toggled(self, checked: bool) -> None:
@@ -1270,17 +1293,27 @@ class SplitFeatureWidget(QWidget):
         QDesktopServices.openUrl(QUrl.fromLocalFile(output_dir))
 
     # ------------------------------------------------------------------
+    def _show_loading(self, message: str) -> None:
+        # Thông báo trạng thái đang tải (màu chữ phụ, không dùng popup)
+        self._is_loading = True
+        self.result_label.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY}; font-size: 12px; font-weight: 500;")
+        self.result_label.setText(f"⏳ {message}")
+        self.result_label.show()
+
     def _show_success(self, message: str) -> None:
+        self._is_loading = False
         self.result_label.setStyleSheet(f"color: {COLOR_SUCCESS}; font-size: 12px; font-weight: 500;")
         self.result_label.setText(f"✓ {message}")
         self.result_label.show()
 
     def _show_error(self, message: str) -> None:
+        self._is_loading = False
         self.result_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 12px; font-weight: 500;")
         self.result_label.setText(f"✕ {message}")
         self.result_label.show()
 
     def _hide_result(self) -> None:
+        self._is_loading = False
         self.result_label.hide()
 
     # ------------------------------------------------------------------

@@ -175,7 +175,12 @@ def _message_box_style() -> str:
 class _SingleDropZone(QFrame):
     file_selected = Signal(str)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        main_text: str = "Chọn file hoặc kéo-thả file vào đây",
+        note_text: str = "Lưu ý: CHỈ CHỌN 1 FILE",
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setFixedHeight(84)
@@ -221,14 +226,14 @@ class _SingleDropZone(QFrame):
         text_col.setSpacing(2)
         text_col.setContentsMargins(0, 0, 0, 0)
 
-        main_label = QLabel("Chọn file hoặc kéo-thả file vào đây")
+        main_label = QLabel(main_text)
         main_label.setStyleSheet(
             f"color: {COLOR_TEXT_PRIMARY}; font-size: 14px; font-weight: 700; "
             "background: transparent; border: none;"
         )
         text_col.addWidget(main_label)
 
-        note_label = QLabel("Lưu ý: CHỈ CHỌN 1 FILE")
+        note_label = QLabel(note_text)
         note_label.setStyleSheet(
             f"color: {COLOR_TEXT_SECONDARY}; font-size: 12px; font-weight: 600; "
             "background: transparent; border: none;"
@@ -511,7 +516,10 @@ class InsertFeatureWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
 
-        self.drop_zone_a = _SingleDropZone()
+        self.drop_zone_a = _SingleDropZone(
+            "File A — Chọn file nguồn",
+            "Lấy trang từ file này để chèn · CHỈ CHỌN 1 FILE",
+        )
         self.drop_zone_a.file_selected.connect(self._on_file_a_selected)
         layout.addWidget(self.drop_zone_a)
 
@@ -679,7 +687,10 @@ class InsertFeatureWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
 
-        self.drop_zone_b = _SingleDropZone()
+        self.drop_zone_b = _SingleDropZone(
+            "File B — Chọn file nền",
+            "Nhận trang được chèn vào · CHỈ CHỌN 1 FILE",
+        )
         self.drop_zone_b.file_selected.connect(self._on_file_b_selected)
         layout.addWidget(self.drop_zone_b)
 

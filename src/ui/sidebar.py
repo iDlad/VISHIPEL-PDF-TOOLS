@@ -39,6 +39,7 @@ MANAGE_FEATURES: List[Tuple[str, str, str]] = [
     ("rename", "Đổi Tên", "mdi6.form-textbox"),
     ("protect", "Bảo vệ", "mdi6.lock-outline"),
     ("watermark", "Watermark", "mdi6.water-outline"),
+    ("compress", "Nén File", "mdi6.archive-outline"),
 ]
 
 FEATURES: List[Tuple[str, str, str]] = MENU_FEATURES + MANAGE_FEATURES

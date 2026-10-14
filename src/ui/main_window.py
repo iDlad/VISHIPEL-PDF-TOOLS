@@ -27,6 +27,7 @@ from src.ui.tools.watermark_widget import WatermarkFeatureWidget
 from src.ui.tools.protect_feature_widget import ProtectFeatureWidget
 from src.ui.tools.rename_widget import RenameFeatureWidget
 from src.ui.tools.extract_widget import ExtractFeatureWidget
+from src.ui.tools.compress_widget import CompressFeatureWidget
 
 from src.logger import clear_log, log_error
 
@@ -82,6 +83,8 @@ class MainWindow(QMainWindow):
                 page = RenameFeatureWidget()    
             elif key == "extract":
                 page = ExtractFeatureWidget()
+            elif key == "compress":
+                page = CompressFeatureWidget()
             else:
                 page = PlaceholderFeatureWidget(label)
             index = self.content_stack.addWidget(page)

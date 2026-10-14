@@ -3,16 +3,12 @@
 
 Giao diện tính năng Nén file PDF (Ver2).
 
-TRẠNG THÁI: CHỈ MỚI LÀ GIAO DIỆN. Chưa có hàm lõi `pdf_core.compress_pdf`.
-- Nếu pdf_core CHƯA có `compress_pdf` -> widget chạy chế độ DEMO: không ghi file, không đụng
-  file gốc, kết quả nén là số liệu minh họa, nút "Xem thử" dùng ảnh giả lập.
-- Khi đã thêm `compress_pdf` vào cuối pdf_core.py, widget tự chuyển sang chế độ thật (xem
-  hợp đồng gọi hàm ở _CompressWorker.run), không cần sửa lại giao diện.
+Widget chỉ lo giao diện; toàn bộ logic nén nằm ở `src/compress_engine.py` (file riêng cho
+tính năng này, không đụng vào pdf_core.py dùng chung). Widget không tự xử lý PDF.
 """
 from __future__ import annotations
 
 import os
-import time
 from typing import Dict, List, Optional
 
 import qtawesome as qta
@@ -22,7 +18,6 @@ from PySide6.QtGui import (
     QDropEvent,
     QDesktopServices,
     QFontMetrics,
-    QImage,
     QPainter,
     QPixmap,
 )
@@ -45,7 +40,12 @@ from PySide6.QtWidgets import (
     QSizePolicy,
 )
 
-import src.pdf_core as _pdf_core
+from src.compress_engine import (
+    CompressError,
+    compress_pdf,
+    has_digital_signature,
+    render_compressed_page,
+)
 from src.pdf_core import (
     CorruptedFileError,
     FileLockedError,
@@ -105,14 +105,6 @@ _LEVEL_HINTS = [
     "Hạ ảnh xuống ~120 DPI, JPEG ~55. File nhỏ hơn, chữ nhỏ bắt đầu kém sắc nét.",
     "Hạ ảnh xuống ~100 DPI, JPEG ~45. Nhỏ nhất, chữ nhỏ có thể khó đọc — nên bấm Xem thử trước.",
 ]
-
-# --- Dữ liệu GIẢ cho chế độ demo (bỏ khi đã nối logic thật) ---
-# Tỉ lệ dung lượng còn lại sau nén (minh họa) theo từng mức.
-_DEMO_SIZE_RATIO = [0.97, 0.45, 0.30, 0.22]
-# Hệ số thu nhỏ ảnh để giả lập mất nét khi Xem thử.
-_DEMO_PREVIEW_SCALE = [1.0, 0.65, 0.5, 0.4]
-# Đặt True để xem bố cục cảnh báo chữ ký số (khi chưa có hàm phát hiện thật).
-_DEMO_FORCE_SIGNATURE_WARNING = False
 
 _LABEL_STYLE = f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; font-weight: 700; background: transparent; border: none;"
 _NOTE_STYLE = f"color: {COLOR_TEXT_SECONDARY}; font-size: 12px; background: transparent; border: none;"
@@ -223,8 +215,8 @@ def _primary_button_qss() -> str:
         QPushButton:hover:enabled {{ background-color: #E28104; }}
         QPushButton:pressed:enabled {{ background-color: #C87203; }}
         QPushButton:disabled {{
-            background-color: #E5E7EB;
-            color: #9CA3AF;
+            background-color: {COLOR_ACCENT};
+            color: white;
         }}
     """
 
@@ -244,12 +236,6 @@ def _set_elided(label: QLabel, text: str, max_px: int) -> None:
     metrics = QFontMetrics(label.font())
     label.setText(metrics.elidedText(text, Qt.ElideMiddle, max_px))
     label.setToolTip(text)
-
-
-def _has_digital_signature(path: str) -> bool:
-    """Phát hiện chữ ký số. CHƯA nối logic thật: sau này gọi hàm trong pdf_core (dựa trên
-    Document.get_sigflags()). Tạm trả về cờ demo để xem bố cục cảnh báo."""
-    return _DEMO_FORCE_SIGNATURE_WARNING
 
 
 # ----------------------------------------------------------------------
@@ -713,63 +699,38 @@ class _OverwriteConfirmDialog(QDialog):
 # Luồng nền chạy nén (không chặn UI)
 # ----------------------------------------------------------------------
 class _CompressWorker(QThread):
-    """Chạy nén ở luồng nền. Phát tín hiệu kết quả, không đụng widget trực tiếp.
-
-    HỢP ĐỒNG gọi hàm lõi (CẦN CHỐT khi viết logic, theo 'Chữ ký gợi ý' ở file yêu cầu):
-        pdf_core.compress_pdf(path, level, output_path, to_grayscale=False) -> dict
-    - level: 1 trong "light" | "medium" | "strong" | "max"
-    - dict trả về: {"size_before": int, "size_after": int, "percent": float,
-                    "status": "ok" | "not_smaller"}
-      status "not_smaller" = kết quả không nhỏ hơn bản gốc, hàm lõi KHÔNG giữ file đầu ra.
-    Hàm lõi tự raise PasswordProtectedError / CorruptedFileError / FileLockedError.
-    """
+    """Chạy nén ở luồng nền bằng compress_engine.compress_pdf. Chỉ phát tín hiệu kết quả,
+    không đụng widget trực tiếp."""
 
     succeeded = Signal(dict)
-    failed = Signal(str, str)  # (loại lỗi: password|corrupt|locked|unknown, thông điệp)
+    failed = Signal(str, str)  # (loại lỗi: password|corrupt|locked|check|unknown, thông điệp)
 
     def __init__(self, src_path: str, dst_path: str, level_key: str,
-                 to_grayscale: bool, level_index: int, parent: QObject | None = None) -> None:
+                 to_grayscale: bool, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._src = src_path
         self._dst = dst_path
         self._level_key = level_key
         self._gray = to_grayscale
-        self._level_index = level_index
 
     def run(self) -> None:
         try:
-            compress_fn = getattr(_pdf_core, "compress_pdf", None)
-            if compress_fn is None:
-                result = self._run_demo()
-            else:
-                result = compress_fn(self._src, self._level_key, self._dst, to_grayscale=self._gray)
-                result = dict(result)
-                result["demo"] = False
-            self.succeeded.emit(result)
+            result = compress_pdf(self._src, self._level_key, self._dst, self._gray)
+            self.succeeded.emit(dict(result))
         except PasswordProtectedError:
             self.failed.emit("password", "File có mật khẩu, không thể xử lý.")
         except CorruptedFileError:
             self.failed.emit("corrupt", "File PDF hỏng hoặc không đọc được.")
         except FileLockedError:
             self.failed.emit("locked", "File đang được sử dụng bởi chương trình khác, vui lòng đóng và thử lại.")
+        except ValueError as exc:
+            self.failed.emit("unknown", str(exc))
+        except CompressError as exc:
+            log_error("Nén PDF không đạt kiểm tra", exc)
+            self.failed.emit("check", str(exc))
         except Exception as exc:  # không để luồng nền chết âm thầm
             log_error("Lỗi không xác định khi nén PDF", exc)
             self.failed.emit("unknown", f"Đã xảy ra lỗi khi nén file: {exc}")
-
-    def _run_demo(self) -> dict:
-        """DEMO: giả lập thời gian xử lý và số liệu, KHÔNG ghi file nào."""
-        time.sleep(1.6)
-        before = os.path.getsize(self._src)
-        after = int(before * _DEMO_SIZE_RATIO[self._level_index])
-        percent = (1 - after / before) * 100 if before else 0.0
-        status = "ok" if after < before else "not_smaller"
-        return {
-            "size_before": before,
-            "size_after": after,
-            "percent": percent,
-            "status": status,
-            "demo": True,
-        }
 
 
 # ----------------------------------------------------------------------
@@ -950,7 +911,7 @@ class CompressFeatureWidget(QWidget):
         self.trial_button.setCursor(Qt.PointingHandCursor)
         self.trial_button.setFixedHeight(CONTROL_HEIGHT)
         self.trial_button.setStyleSheet(_secondary_button_qss())
-        self.trial_button.setToolTip("So sánh trang đang xem trước/sau khi nén ở độ phóng 100% (không ghi file)")
+        self.trial_button.setToolTip("Nén thử trang đang xem trong bộ nhớ và so sánh trước/sau ở độ phóng 100% (không ghi file)")
         self.trial_button.clicked.connect(self._on_trial_clicked)
         config_layout.addWidget(self.trial_button)
 
@@ -1190,7 +1151,7 @@ class CompressFeatureWidget(QWidget):
         compare_sides = QHBoxLayout()
         compare_sides.setSpacing(10)
         self.compare_before = _CompareSide("Trước (gốc)")
-        self.compare_after = _CompareSide("Sau (minh họa)")
+        self.compare_after = _CompareSide("Sau (nén thử)")
         compare_sides.addWidget(self.compare_before, 1)
         compare_sides.addWidget(self.compare_after, 1)
         compare_layout.addLayout(compare_sides, 1)
@@ -1259,7 +1220,8 @@ class CompressFeatureWidget(QWidget):
         self.gray_checkbox.setEnabled(not busy and level_index != 0)
         self.gray_note.setEnabled(level_index != 0)
         self.trial_button.setEnabled(has_file and not busy)
-        self.save_button.setEnabled(has_file and not busy)
+        # Nút Lưu File luôn bấm được (chưa chọn file thì báo cảnh báo), chỉ khóa khi đang nén
+        self.save_button.setEnabled(not busy)
         self.clear_button.setEnabled(not busy)
 
     def _on_level_changed(self, index: int) -> None:
@@ -1295,7 +1257,7 @@ class CompressFeatureWidget(QWidget):
             self.info_size_value.setText(_format_size(os.path.getsize(path)))
         except OSError:
             self.info_size_value.setText("—")
-        self.signature_warning.setVisible(_has_digital_signature(path))
+        self.signature_warning.setVisible(has_digital_signature(path))
 
     # ------------------------------------------------------------------
     # Chọn file / Clear
@@ -1417,6 +1379,7 @@ class CompressFeatureWidget(QWidget):
 
     def _on_save_clicked(self) -> None:
         if not self._current_file_path:
+            self._hide_result()
             self._show_error("Vui lòng chọn file PDF trước khi thực hiện.")
             return
 
@@ -1448,7 +1411,7 @@ class CompressFeatureWidget(QWidget):
 
         level_key = _LEVELS[level_index][0]
         self._worker = _CompressWorker(
-            self._current_file_path, save_path, level_key, gray, level_index, self
+            self._current_file_path, save_path, level_key, gray, self
         )
         self._worker.succeeded.connect(self._on_compress_succeeded)
         self._worker.failed.connect(self._on_compress_failed)
@@ -1468,34 +1431,39 @@ class CompressFeatureWidget(QWidget):
     def _on_compress_succeeded(self, result: dict) -> None:
         self._set_busy(False)
         save_path = self._last_job[0] if self._last_job else ""
-        demo = bool(result.get("demo"))
 
         before = int(result.get("size_before", 0))
         after = int(result.get("size_after", 0))
         percent = float(result.get("percent", 0.0))
         status = result.get("status", "ok")
-        demo_tag = "[DEMO — chưa nối logic nén, chưa ghi file] " if demo else ""
+
+        diag = str(result.get("diag", ""))
+        log_info(f"Chẩn đoán nén '{self._current_file_path}': {diag}")
 
         if status == "not_smaller":
             # Không giảm được: không lưu file, không phải lỗi
             self._show_size_card(before, after, percent, ok=False)
             self._show_info(
-                f"{demo_tag}Không giảm được: kết quả không nhỏ hơn bản gốc nên không lưu file. "
-                "File chủ yếu là chữ vector hoặc đã được tối ưu sẵn — đây không phải lỗi."
+                "Không giảm được: kết quả không nhỏ hơn bản gốc nên không lưu file. "
+                "Ảnh trong file đã được nén tốt hơn mức đã chọn, hoặc phần lớn dung lượng "
+                "không nằm ở ảnh — đây không phải lỗi. "
+                f"Chẩn đoán: {diag}"
             )
             log_info(f"Nén PDF không giảm được: '{self._current_file_path}'")
             return
 
         self._show_size_card(before, after, percent, ok=True)
-        if demo:
-            self._show_success(f"{demo_tag}Minh họa giao diện kết quả.")
-            return
-
         log_info(
             f"Đã nén PDF '{self._current_file_path}' -> '{save_path}' "
             f"({_format_size(before)} -> {_format_size(after)}, giảm {percent:.0f}%)"
         )
-        self._show_success(f"Đã nén xong! Kết quả: {save_path}")
+        if percent < 5:
+            self._show_info(
+                "Đã nén xong nhưng giảm rất ít — file chủ yếu là chữ vector hoặc ảnh đã tối ưu "
+                f"sẵn, đây là bình thường. Kết quả: {save_path}"
+            )
+        else:
+            self._show_success(f"Đã nén xong! Kết quả: {save_path}")
         self._open_result_folder(save_path)
 
     def _on_compress_failed(self, kind: str, message: str) -> None:
@@ -1539,6 +1507,11 @@ class CompressFeatureWidget(QWidget):
         self.setCursor(Qt.WaitCursor)
         try:
             before, after = self._build_trial_pixmaps(self._current_page - 1)
+        except CompressError as exc:
+            log_error(f"Xem thử trang {self._current_page} thất bại", exc)
+            self._exit_compare_mode()
+            self._show_error(str(exc))
+            return
         except Exception as exc:
             log_error(f"Lỗi xem thử trang {self._current_page}", exc)
             self._exit_compare_mode()
@@ -1555,18 +1528,16 @@ class CompressFeatureWidget(QWidget):
         extra = " Mức Nhẹ không đụng vào ảnh nên hai bên giống nhau." if level_index == 0 else ""
         self.compare_info_label.setText(
             f"Mức: {_LEVELS[level_index][1]} · Chuyển xám: {gray_text} · Xem ở 100%. "
-            f"Ảnh bên phải chỉ là MINH HỌA, chưa phải kết quả nén thật.{extra}"
+            f"Ảnh bên phải là bản nén thử riêng trang này (không ghi file).{extra}"
         )
 
     def _build_trial_pixmaps(self, page_index: int) -> tuple:
-        """Trả về (ảnh gốc, ảnh sau nén) của 1 trang ở độ phóng 100%.
+        """Trả về (ảnh gốc, ảnh sau nén thử) của 1 trang ở độ phóng 100%.
 
-        DEMO: ảnh 'sau' được giả lập bằng cách thu nhỏ rồi phóng lại (mất nét) và chuyển xám.
-        Khi có logic thật: thay phần giả lập bằng hàm trong pdf_core nén riêng 1 trang trong
-        bộ nhớ và trả về bytes ảnh render."""
+        Ảnh 'sau' do compress_engine nén riêng 1 trang trong bộ nhớ theo mức đang chọn."""
         info = self._current_page_infos[page_index]
         width_points = info.width or _PREVIEW_PAGE_WIDTH_FALLBACK
-        # 100% = 1 điểm ảnh PDF ứng với 96 DPI màn hình (1 point = 1/72 inch)
+        # 100% = 1 point PDF ứng với 96 DPI màn hình (1 point = 1/72 inch)
         width_px = max(200, round(width_points * 96 / 72))
 
         data = self._renderer.render_page_detail(self._current_file_path, page_index, target_width=width_px)
@@ -1574,26 +1545,12 @@ class CompressFeatureWidget(QWidget):
         before.loadFromData(data)
 
         level_index, gray = self._current_job_options()
-        after = self._simulate_compressed(before, level_index, gray)
+        after_data = render_compressed_page(
+            self._current_file_path, page_index, _LEVELS[level_index][0], gray, width_px
+        )
+        after = QPixmap()
+        after.loadFromData(after_data)
         return before, after
-
-    @staticmethod
-    def _simulate_compressed(pixmap: QPixmap, level_index: int, gray: bool) -> QPixmap:
-        """DEMO — giả lập ảnh sau nén, không phải thuật toán nén thật."""
-        if pixmap.isNull():
-            return pixmap
-        image = pixmap.toImage()
-        factor = _DEMO_PREVIEW_SCALE[level_index]
-        if factor < 1.0:
-            w, h = image.width(), image.height()
-            small = image.scaled(
-                max(1, int(w * factor)), max(1, int(h * factor)),
-                Qt.IgnoreAspectRatio, Qt.SmoothTransformation,
-            )
-            image = small.scaled(w, h, Qt.IgnoreAspectRatio, Qt.FastTransformation)
-        if gray and level_index != 0:
-            image = image.convertToFormat(QImage.Format_Grayscale8)
-        return QPixmap.fromImage(image)
 
     # ------------------------------------------------------------------
     # Xử lý Preview (Cột B)

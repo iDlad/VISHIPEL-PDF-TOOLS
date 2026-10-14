@@ -1,2 +1,19 @@
 2026-10-07 17:51:29 [INFO] Đã xóa log thủ công theo yêu cầu người dùng.
 2026-10-10 16:32:11 [INFO] Tách file thành công: 'D:/Temp/Test.pdf' -> 19 file tại 'D:/Temp'
+2026-10-14 10:11:00 [INFO] Nén PDF không giảm được: 'D:/temp/22092026_QT.VHTB-STDVH-OPC.pdf'
+2026-10-14 10:11:53 [INFO] Nén PDF không giảm được: 'D:/temp/22092026_QT.VHTB-STDVH-OPC.pdf'
+2026-10-14 10:12:27 [INFO] Nén PDF không giảm được: 'D:/temp/22092026_QT.VHTB-STDVH-OPC.pdf'
+2026-10-14 10:15:39 [INFO] Đã nén PDF 'D:/temp/22092026_QT.VHTB-STDVH-OPC.pdf' -> 'D:/22092026_QT.VHTB-STDVH-OPC_compressed.pdf' (13.5 MB -> 11.7 MB, giảm 13%)
+2026-10-14 10:16:33 [INFO] Đã nén PDF 'D:/temp/22092026_QT.VHTB-STDVH-OPC.pdf' -> 'D:/22092026_QT.VHTB-STDVH-OPC_compressed.pdf' (13.5 MB -> 11.8 MB, giảm 13%)
+2026-10-14 10:16:52 [INFO] Đã nén PDF 'D:/temp/22092026_QT.VHTB-STDVH-OPC.pdf' -> 'D:/22092026_QT.VHTB-STDVH-OPC_compressed.pdf' (13.5 MB -> 11.8 MB, giảm 13%)
+2026-10-14 10:17:10 [INFO] Đã nén PDF 'D:/temp/22092026_QT.VHTB-STDVH-OPC.pdf' -> 'D:/22092026_QT.VHTB-STDVH-OPC_compressed.pdf' (13.5 MB -> 11.8 MB, giảm 13%)
+2026-10-14 10:17:36 [INFO] Nén PDF không giảm được: 'D:/temp/22092026_QT.VHTB-STDVH-OPC.pdf'
+2026-10-14 10:18:29 [INFO] Nén PDF không giảm được: 'D:/temp/22092026_QT.VHTB-STDVH-OPC.pdf'
+2026-10-14 10:21:48 [INFO] Chẩn đoán nén 'D:/temp/22092026_QT.VHTB-STDVH-OPC.pdf': PyMuPDF 1.28.2 · 170 trang · 675 ảnh (11.1 MB, 82% dung lượng file) · đã thu nhỏ 0 (tiết kiệm 0 B) · giữ nguyên 170 · bỏ qua 505 · lỗi 0 · định dạng ảnh: FlateDecode×170, CCITTFaxDecode×505
+2026-10-14 10:21:48 [INFO] Đã nén PDF 'D:/temp/22092026_QT.VHTB-STDVH-OPC.pdf' -> 'D:/22092026_QT.VHTB-STDVH-OPC_compressed.pdf' (13.5 MB -> 11.8 MB, giảm 13%)
+2026-10-14 10:22:09 [INFO] Chẩn đoán nén 'D:/temp/22092026_QT.VHTB-STDVH-OPC.pdf': PyMuPDF 1.28.2 · 170 trang · 675 ảnh (11.1 MB, 82% dung lượng file) · đã thu nhỏ 0 (tiết kiệm 0 B) · giữ nguyên 170 · bỏ qua 505 · lỗi 0 · định dạng ảnh: FlateDecode×170, CCITTFaxDecode×505
+2026-10-14 10:22:09 [INFO] Đã nén PDF 'D:/temp/22092026_QT.VHTB-STDVH-OPC.pdf' -> 'D:/22092026_QT.VHTB-STDVH-OPC_compressed.pdf' (13.5 MB -> 11.8 MB, giảm 13%)
+2026-10-14 10:22:29 [INFO] Chẩn đoán nén 'D:/temp/22092026_QT.VHTB-STDVH-OPC.pdf': PyMuPDF 1.28.2 · 170 trang · 675 ảnh (11.1 MB, 82% dung lượng file) · đã thu nhỏ 170 (tiết kiệm 2.6 MB) · giữ nguyên 0 · bỏ qua 505 · lỗi 0 · định dạng ảnh: FlateDecode×170, CCITTFaxDecode×505
+2026-10-14 10:22:29 [INFO] Đã nén PDF 'D:/temp/22092026_QT.VHTB-STDVH-OPC.pdf' -> 'D:/22092026_QT.VHTB-STDVH-OPC_compressed.pdf' (13.5 MB -> 9.2 MB, giảm 32%)
+2026-10-14 10:22:51 [INFO] Chẩn đoán nén 'D:/temp/22092026_QT.VHTB-STDVH-OPC.pdf': PyMuPDF 1.28.2 · 170 trang · 675 ảnh (11.1 MB, 82% dung lượng file) · đã thu nhỏ 170 (tiết kiệm 2.6 MB) · giữ nguyên 0 · bỏ qua 505 · lỗi 0 · định dạng ảnh: FlateDecode×170, CCITTFaxDecode×505
+2026-10-14 10:22:51 [INFO] Đã nén PDF 'D:/temp/22092026_QT.VHTB-STDVH-OPC.pdf' -> 'D:/22092026_QT.VHTB-STDVH-OPC_compressed.pdf' (13.5 MB -> 9.2 MB, giảm 32%)
